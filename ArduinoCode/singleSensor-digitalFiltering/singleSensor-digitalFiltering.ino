@@ -44,13 +44,11 @@ void loop() {
     // lower raw value = more bend = higher percentage
     float bendPercent = (rawMax - clampedRaw) * 100.0 / (rawMax - rawMin);
 
-    Serial.print("raw=");
+    // Serial Plotter format
     Serial.print(raw);
-
-    Serial.print(", filtered=");
+    Serial.print("\t");
     Serial.print(filteredRaw, 1);
-
-    Serial.print(", bendPercent=");
+    Serial.print("\t");
     Serial.println(bendPercent, 1);
   }
 }
