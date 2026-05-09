@@ -1,4 +1,4 @@
-const int FLEX_PIN = 4;
+const int FLEX_PIN = 4; // test
 int flexMin = 0;      // reading when sensor is straight
 int flexMax = 4095;   // reading when sensor is fully bent
 
