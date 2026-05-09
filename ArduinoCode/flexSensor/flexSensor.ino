@@ -5,7 +5,7 @@ int flexMax = 4095;   // reading when sensor is fully bent
 
 void setup() {
   // put your setup code here, to run once:
-  Serial.begin(115200);
+  Serial.begin(9600);
   delay(1000);
 
   analogReadResolution(12); // ESP32-S3 ADC: 0 to 4095
