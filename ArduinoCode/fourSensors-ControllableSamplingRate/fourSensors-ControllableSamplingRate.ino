@@ -5,8 +5,8 @@ const unsigned long sampleIntervalMs = 500;  // 2 Hz
 unsigned long lastSampleMs = 0;
 
 // Slightly wider than theoretical range of ~1290 to ~2650
-const int rawMin = 1100;
-const int rawMax = 2800;
+const int rawMin = 1200;
+const int rawMax = 2600;
 
 void setup() {
   Serial.begin(115200);
