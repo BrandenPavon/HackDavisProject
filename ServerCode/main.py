@@ -1,11 +1,14 @@
 import os
+import uuid
+import threading
 from collections import OrderedDict
 from datetime import datetime, timezone
-from bson import ObjectId
+
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request, render_template
 from pymongo import MongoClient
 from pymongo.errors import PyMongoError
+
 
 load_dotenv()
 app = Flask(__name__)
@@ -16,15 +19,135 @@ mongo_uri = os.getenv(
 )
 mongo_db_name = os.getenv("MONGO_DB", "hackdavis")
 
+# MongoClient is thread-safe.
+# Keep one global client and reuse it.
 client = MongoClient(mongo_uri)
 db = client[mongo_db_name]
 
-# Collection for flex sensor batches
+# Collection for flex sensor batches.
 flex_data = db["hackdavis"]
+
+# In-memory state for the current exercise.
+# This is safe for multi-threaded Flask because we protect it with state_lock.
+# This is NOT safe for multiple Gunicorn worker processes because each process
+# gets its own copy of this dictionary.
+exercise_states = {
+    "active_session_id": None,
+    "sessions": {}
+}
+
+state_lock = threading.RLock()
+
+
+def utc_now():
+    return datetime.now(timezone.utc)
+
+
+def utc_now_iso():
+    return utc_now().isoformat()
+
 
 def serialize_doc(doc):
     doc["_id"] = str(doc["_id"])
+
+    created_at = doc.get("created_at")
+    if isinstance(created_at, datetime):
+        doc["created_at"] = created_at.isoformat()
+
     return doc
+
+
+def get_active_session_state():
+    """
+    Thread-safe helper.
+    Returns a copy of the active session state.
+    """
+
+    with state_lock:
+        active_session_id = exercise_states.get("active_session_id")
+
+        if not active_session_id:
+            return None
+
+        state = exercise_states["sessions"].get(active_session_id)
+
+        if not state or not state.get("start"):
+            return None
+
+        return {
+            "session_id": active_session_id,
+            "start": state.get("start"),
+            "started_at": state.get("started_at"),
+            "stopped_at": state.get("stopped_at")
+        }
+
+
+def create_new_session(custom_session_id=None):
+    """
+    Thread-safe helper.
+    Creates a new active session.
+
+    If another session is active, mark it stopped first.
+    """
+
+    with state_lock:
+        now = utc_now_iso()
+
+        old_active_session_id = exercise_states.get("active_session_id")
+
+        if old_active_session_id:
+            old_state = exercise_states["sessions"].get(old_active_session_id)
+
+            if old_state and old_state.get("start"):
+                old_state["start"] = False
+                old_state["stopped_at"] = now
+
+        session_id = custom_session_id or f"session_{uuid.uuid4().hex[:8]}"
+
+        exercise_states["active_session_id"] = session_id
+        exercise_states["sessions"][session_id] = {
+            "start": True,
+            "started_at": now,
+            "stopped_at": None
+        }
+
+        return {
+            "session_id": session_id,
+            "start": True,
+            "started_at": now,
+            "stopped_at": None
+        }
+
+
+def stop_session(session_id=None):
+    """
+    Thread-safe helper.
+    Stops a specific session, or the currently active session if no ID is given.
+    """
+
+    with state_lock:
+        target_session_id = session_id or exercise_states.get("active_session_id")
+
+        if not target_session_id:
+            return None, "No active exercise to stop"
+
+        if target_session_id not in exercise_states["sessions"]:
+            return None, "Unknown session_id"
+
+        stopped_at = utc_now_iso()
+
+        exercise_states["sessions"][target_session_id]["start"] = False
+        exercise_states["sessions"][target_session_id]["stopped_at"] = stopped_at
+
+        if exercise_states.get("active_session_id") == target_session_id:
+            exercise_states["active_session_id"] = None
+
+        return {
+            "session_id": target_session_id,
+            "start": False,
+            "stopped_at": stopped_at
+        }, None
+
 
 class Exercise:
     def __init__(
@@ -50,23 +173,6 @@ class Exercise:
         self.exercise_data = []
 
     def begin(self, max_batches=None, timeout_seconds=30):
-        """
-        Listen for new MongoDB flex sensor batches for this exercise session.
-
-        Returns:
-            OrderedDict sorted by created_at timestamp.
-
-        Example return:
-        {
-            "2026-05-09T12:00:00.123000+00:00": {
-                "session_id": "session_123",
-                "sensor_type": "flex",
-                "data": [512, 518, 521]
-            },
-            ...
-        }
-        """
-
         pipeline = [
             {
                 "$match": {
@@ -85,10 +191,10 @@ class Exercise:
                 max_await_time_ms=1000
             ) as stream:
 
-                start_time = datetime.now(timezone.utc)
+                start_time = utc_now()
 
                 for change in stream:
-                    now = datetime.now(timezone.utc)
+                    now = utc_now()
                     elapsed = (now - start_time).total_seconds()
 
                     if elapsed >= timeout_seconds:
@@ -121,10 +227,6 @@ class Exercise:
         return self.sorted_sensor_data()
 
     def sorted_sensor_data(self):
-        """
-        Return all collected exercise sensor batches sorted by timestamp.
-        """
-
         sorted_batches = sorted(
             self.exercise_data,
             key=lambda item: item["created_at"]
@@ -150,19 +252,20 @@ class Exercise:
         return result
 
     def summarize(self):
-        """
-        Basic summary of all sensor values collected so far.
-        """
-
         all_values = []
 
         for batch in self.exercise_data:
-            for value in batch["data"]:
-                if isinstance(value, dict):
-                    value = value.get("value")
-
-                if isinstance(value, (int, float)):
-                    all_values.append(value)
+            for row in batch["data"]:
+                if isinstance(row, list):
+                    for value in row:
+                        if isinstance(value, (int, float)):
+                            all_values.append(value)
+                elif isinstance(row, dict):
+                    value = row.get("value")
+                    if isinstance(value, (int, float)):
+                        all_values.append(value)
+                elif isinstance(row, (int, float)):
+                    all_values.append(row)
 
         if not all_values:
             return {
@@ -186,49 +289,76 @@ class Exercise:
 
 
 @app.get("/")
-def home():
-    try:
-        data = list(flex_data.find())
-        data = [serialize_doc(doc) for doc in data]
+def go():
+    return render_template("index.html")
 
-        print("MongoDB Data:", data)
-        exercise = Exercise(session_id="session_001")
 
-        data = exercise.begin(
-            max_batches=5,
-            timeout_seconds=30
-        )
-        summary = exercise.summarize()
+@app.post("/start_exercise")
+def start_exercise():
+    body = request.get_json(silent=True) or {}
 
-        print(data)
-        print(summary)
+    custom_session_id = body.get("session_id")
 
-        exercise.close()
-        return jsonify(data)
-    except PyMongoError as e:
-        return jsonify({"error": str(e)}), 500
+    session = create_new_session(custom_session_id)
+
+    return jsonify({
+        "message": "Exercise started",
+        "session_id": session["session_id"],
+        "start": session["start"],
+        "started_at": session["started_at"],
+        "stopped_at": session["stopped_at"]
+    }), 200
+
+
+@app.get("/poll_start_exercise")
+def poll_start_exercise():
+    session = get_active_session_state()
+
+    if not session:
+        return jsonify({
+            "start": False,
+            "session_id": None,
+            "started_at": None,
+            "stopped_at": None
+        }), 200
+
+    return jsonify({
+        "start": True,
+        "session_id": session["session_id"],
+        "started_at": session["started_at"],
+        "stopped_at": session["stopped_at"]
+    }), 200
+
+
+@app.post("/stop_exercise")
+def stop_exercise():
+    body = request.get_json(silent=True) or {}
+
+    requested_session_id = body.get("session_id")
+
+    stopped_session, error = stop_session(requested_session_id)
+
+    if error == "No active exercise to stop":
+        return jsonify({
+            "error": error
+        }), 400
+
+    if error == "Unknown session_id":
+        return jsonify({
+            "error": error,
+            "session_id": requested_session_id
+        }), 404
+
+    return jsonify({
+        "message": "Exercise stopped",
+        "session_id": stopped_session["session_id"],
+        "start": stopped_session["start"],
+        "stopped_at": stopped_session["stopped_at"]
+    }), 200
 
 
 @app.post("/flex-data")
 def post_flex_data():
-    """
-    Expected JSON format:
-
-    {
-        "session_id": "session_123",
-        "data": [512, 518, 521, 519, 530]
-    }
-
-    Optional:
-    {
-        "session_id": "session_123",
-        "data": [
-            {"timestamp": 0.0, "value": 512},
-            {"timestamp": 0.1, "value": 518}
-        ]
-    }
-    """
-
     try:
         body = request.get_json()
 
@@ -247,12 +377,33 @@ def post_flex_data():
         if not isinstance(sensor_data, list):
             return jsonify({"error": "data must be a list"}), 400
 
+        for row in sensor_data:
+            if not isinstance(row, list):
+                return jsonify({
+                    "error": "Each data row must be a list"
+                }), 400
+
+            if len(row) != 3:
+                return jsonify({
+                    "error": "Each data row must have exactly 3 values",
+                    "expected_format": [
+                        "flex_sensor_1",
+                        "flex_sensor_2",
+                        "flex_sensor_3"
+                    ]
+                }), 400
+
+            if not all(isinstance(value, (int, float)) for value in row):
+                return jsonify({
+                    "error": "All flex sensor values must be numbers"
+                }), 400
+
         document = {
             "session_id": session_id,
             "sensor_type": "flex",
             "batch_duration_seconds": 1,
             "data": sensor_data,
-            "created_at": datetime.now(timezone.utc)
+            "created_at": utc_now()
         }
 
         result = flex_data.insert_one(document)
@@ -265,14 +416,109 @@ def post_flex_data():
 
     except PyMongoError as e:
         return jsonify({"error": str(e)}), 500
+
     except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.get("/last-exercise-data")
+def get_last_exercise_data():
+    try:
+        session_id = request.args.get("session_id")
+
+        query = {}
+        if session_id:
+            query["session_id"] = session_id
+
+        latest_doc = flex_data.find_one(
+            query,
+            sort=[("created_at", -1)]
+        )
+
+        if not latest_doc:
+            return jsonify({
+                "found": False,
+                "message": "No exercise data found",
+                "session_id": session_id
+            }), 404
+
+        created_at = latest_doc.get("created_at")
+
+        if isinstance(created_at, datetime):
+            created_at = created_at.isoformat()
+
+        return jsonify({
+            "found": True,
+            "id": str(latest_doc["_id"]),
+            "session_id": latest_doc.get("session_id"),
+            "sensor_type": latest_doc.get("sensor_type", "flex"),
+            "batch_duration_seconds": latest_doc.get("batch_duration_seconds"),
+            "data": latest_doc.get("data", []),
+            "created_at": created_at
+        }), 200
+
+    except PyMongoError as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.get("/exercise-data")
+def get_exercise_data():
+    try:
+        session_id = request.args.get("session_id")
+
+        if not session_id:
+            return jsonify({"error": "Missing session_id"}), 400
+
+        docs = list(
+            flex_data.find({"session_id": session_id})
+            .sort("created_at", 1)
+        )
+
+        if not docs:
+            return jsonify({
+                "found": False,
+                "message": "No exercise data found",
+                "session_id": session_id,
+                "count": 0,
+                "batches": []
+            }), 404
+
+        batches = []
+
+        for doc in docs:
+            created_at = doc.get("created_at")
+
+            if isinstance(created_at, datetime):
+                created_at = created_at.isoformat()
+
+            batches.append({
+                "id": str(doc["_id"]),
+                "session_id": doc.get("session_id"),
+                "sensor_type": doc.get("sensor_type", "flex"),
+                "batch_duration_seconds": doc.get("batch_duration_seconds"),
+                "data": doc.get("data", []),
+                "created_at": created_at
+            })
+
+        return jsonify({
+            "found": True,
+            "session_id": session_id,
+            "count": len(batches),
+            "batches": batches
+        }), 200
+
+    except PyMongoError as e:
         return jsonify({"error": str(e)}), 500
 
 
 @app.get("/flex-data/<session_id>")
 def get_flex_data_by_session(session_id):
     try:
-        data = list(flex_data.find({"session_id": session_id}))
+        data = list(
+            flex_data.find({"session_id": session_id})
+            .sort("created_at", 1)
+        )
+
         data = [serialize_doc(doc) for doc in data]
 
         return jsonify(data), 200
@@ -281,5 +527,32 @@ def get_flex_data_by_session(session_id):
         return jsonify({"error": str(e)}), 500
 
 
+@app.get("/active-session")
+def get_active_session():
+    session = get_active_session_state()
+
+    if not session:
+        return jsonify({
+            "active": False,
+            "session_id": None
+        }), 200
+
+    return jsonify({
+        "active": True,
+        "session_id": session["session_id"],
+        "state": {
+            "start": session["start"],
+            "started_at": session["started_at"],
+            "stopped_at": session["stopped_at"]
+        }
+    }), 200
+
+
 if __name__ == "__main__":
-    app.run(debug=True, port=5000)
+    app.run(
+        host="0.0.0.0",
+        debug=True,
+        port=5000,
+        threaded=True,
+        use_reloader=False
+    )

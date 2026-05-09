@@ -1,3 +1,1044 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Patient Flex Sensor Dashboard</title>
 
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
-<p>Main</p>
+  <style>
+    :root {
+      --kp-blue: #0079c1;
+      --kp-blue-dark: #005b9f;
+      --kp-blue-light: #e8f4fb;
+      --kp-teal: #00a3ad;
+      --kp-green: #2e8540;
+      --kp-red: #c62828;
+      --kp-yellow: #f8c246;
+      --ink: #1f2933;
+      --muted: #52616b;
+      --line: #d8e2ea;
+      --surface: #ffffff;
+      --background: #f3f8fb;
+      --shadow: 0 8px 24px rgba(0, 91, 159, 0.12);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: Arial, Helvetica, sans-serif;
+      margin: 0;
+      background:
+        radial-gradient(circle at top left, rgba(0, 121, 193, 0.13), transparent 32%),
+        linear-gradient(180deg, #f7fbfd 0%, var(--background) 100%);
+      color: var(--ink);
+    }
+
+    .page-shell {
+      width: min(1180px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 28px 0 40px;
+    }
+
+    .topbar {
+      background: var(--surface);
+      border-bottom: 5px solid var(--kp-blue);
+      box-shadow: var(--shadow);
+    }
+
+    .topbar-inner {
+      width: min(1180px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 20px 0 18px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+      flex-wrap: wrap;
+    }
+
+    .brand-lockup {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+
+    .brand-mark {
+      width: 54px;
+      height: 54px;
+      border-radius: 18px;
+      background: linear-gradient(135deg, var(--kp-blue), var(--kp-teal));
+      display: grid;
+      place-items: center;
+      color: white;
+      font-weight: 800;
+      font-size: 20px;
+      letter-spacing: -0.5px;
+      box-shadow: 0 8px 18px rgba(0, 121, 193, 0.25);
+    }
+
+    .eyebrow {
+      margin: 0 0 4px;
+      color: var(--kp-blue-dark);
+      font-size: 13px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    h1 {
+      margin: 0;
+      color: var(--ink);
+      font-size: clamp(26px, 4vw, 40px);
+      line-height: 1.1;
+    }
+
+    .topbar-note {
+      color: var(--muted);
+      font-size: 15px;
+      max-width: 360px;
+      line-height: 1.45;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: minmax(280px, 390px) 1fr;
+      gap: 20px;
+      align-items: start;
+    }
+
+    .stack {
+      display: grid;
+      gap: 20px;
+    }
+
+    .card,
+    .controls,
+    .status-box,
+    .chart-container,
+    .raw-card {
+      background: var(--surface);
+      padding: 22px;
+      border-radius: 18px;
+      border: 1px solid var(--line);
+      box-shadow: var(--shadow);
+      margin-bottom: 20px;
+    }
+
+    .grid .card,
+    .grid .controls,
+    .grid .status-box,
+    .grid .chart-container,
+    .grid .raw-card {
+      margin-bottom: 0;
+    }
+
+    h2 {
+      margin: 0 0 16px;
+      font-size: 20px;
+      color: var(--kp-blue-dark);
+    }
+
+    p {
+      color: var(--muted);
+      line-height: 1.45;
+    }
+
+    .status-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 11px 0;
+      border-bottom: 1px solid var(--line);
+      align-items: center;
+    }
+
+    .status-row:last-of-type {
+      border-bottom: 0;
+    }
+
+    .status-label {
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .status-value {
+      text-align: right;
+      font-weight: 700;
+      color: var(--ink);
+      overflow-wrap: anywhere;
+    }
+
+    .active,
+    .inactive,
+    .neutral {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 5px 10px;
+      border-radius: 999px;
+      font-weight: 700;
+      font-size: 14px;
+    }
+
+    .active {
+      color: var(--kp-green);
+      background: #eaf6ed;
+    }
+
+    .inactive {
+      color: var(--kp-red);
+      background: #fdecec;
+    }
+
+    .neutral {
+      color: var(--kp-blue-dark);
+      background: var(--kp-blue-light);
+    }
+
+    .active::before,
+    .inactive::before,
+    .neutral::before {
+      content: "";
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+
+    .button-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 18px;
+    }
+
+    button {
+      padding: 11px 16px;
+      font-size: 15px;
+      font-weight: 700;
+      cursor: pointer;
+      border: 0;
+      border-radius: 10px;
+      transition: transform 120ms ease, box-shadow 120ms ease, background 120ms ease;
+      margin-left: 0;
+      margin-top: 0;
+    }
+
+    button:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 8px 14px rgba(31, 41, 51, 0.13);
+    }
+
+    .danger {
+      background: var(--kp-red);
+      color: white;
+    }
+
+    .success {
+      background: var(--kp-blue);
+      color: white;
+    }
+
+    .success:hover {
+      background: var(--kp-blue-dark);
+    }
+
+    .secondary {
+      background: var(--kp-blue-light);
+      color: var(--kp-blue-dark);
+      border: 1px solid #b9ddf2;
+    }
+
+    .input-row {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    input {
+      padding: 12px 13px;
+      width: min(100%, 360px);
+      font-size: 15px;
+      border-radius: 10px;
+      border: 1px solid #b9c8d4;
+      outline: none;
+      background: #fbfdff;
+    }
+
+    input:focus {
+      border-color: var(--kp-blue);
+      box-shadow: 0 0 0 4px rgba(0, 121, 193, 0.12);
+    }
+
+    code {
+      color: var(--kp-blue-dark);
+      background: var(--kp-blue-light);
+      padding: 2px 6px;
+      border-radius: 6px;
+    }
+
+    .metrics-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 14px;
+      margin-bottom: 20px;
+    }
+
+    .metric-card {
+      background: linear-gradient(180deg, #ffffff 0%, #f8fcfe 100%);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 18px;
+      box-shadow: 0 5px 18px rgba(0, 91, 159, 0.08);
+    }
+
+    .metric-label {
+      color: var(--muted);
+      font-size: 13px;
+      margin-bottom: 7px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .metric-value {
+      color: var(--kp-blue-dark);
+      font-size: 32px;
+      line-height: 1;
+      font-weight: 800;
+    }
+
+    .metric-subtext {
+      color: var(--muted);
+      font-size: 13px;
+      margin-top: 8px;
+    }
+
+    .interpretation-banner {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 14px;
+      align-items: center;
+      padding: 16px;
+      margin-bottom: 18px;
+      border-radius: 16px;
+      background: var(--kp-blue-light);
+      border: 1px solid #b9ddf2;
+    }
+
+    .interpretation-banner strong {
+      color: var(--kp-blue-dark);
+    }
+
+    .baseline-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--kp-blue-dark);
+      background: white;
+      border: 1px solid #b9ddf2;
+      padding: 8px 11px;
+      border-radius: 999px;
+      font-weight: 800;
+      white-space: nowrap;
+    }
+
+    .sensor-table {
+      width: 100%;
+      border-collapse: collapse;
+      overflow: hidden;
+      border-radius: 14px;
+      border: 1px solid var(--line);
+      margin-top: 12px;
+    }
+
+    .sensor-table th,
+    .sensor-table td {
+      padding: 12px 10px;
+      text-align: left;
+      border-bottom: 1px solid var(--line);
+      font-size: 14px;
+    }
+
+    .sensor-table th {
+      background: #f0f8fc;
+      color: var(--kp-blue-dark);
+      font-size: 13px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .sensor-table tr:last-child td {
+      border-bottom: 0;
+    }
+
+    .movement-on {
+      color: var(--kp-green);
+      font-weight: 800;
+    }
+
+    .movement-off {
+      color: var(--muted);
+      font-weight: 700;
+    }
+
+    canvas {
+      max-height: 500px;
+    }
+
+    pre {
+      background: #102230;
+      color: #9ff0b5;
+      padding: 16px;
+      border-radius: 14px;
+      overflow-x: auto;
+      max-height: 300px;
+      border: 1px solid #18364a;
+    }
+
+    .footer-note {
+      color: var(--muted);
+      font-size: 13px;
+      margin-top: 18px;
+      text-align: center;
+    }
+
+    @media (max-width: 900px) {
+      .grid {
+        grid-template-columns: 1fr;
+      }
+
+      .metrics-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
+
+    @media (max-width: 560px) {
+      .metrics-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .interpretation-banner {
+        grid-template-columns: 1fr;
+      }
+
+      .status-row {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+
+      .status-value {
+        text-align: left;
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand-lockup">
+        <div class="brand-mark">KP</div>
+        <div>
+          <p class="eyebrow">Patient movement monitoring</p>
+          <h1>Flex Sensor Exercise Dashboard</h1>
+        </div>
+      </div>
+      <div class="topbar-note">
+        Real-time session tracking for patient flex sensor exercises, movement interpretation, and repetition counting.
+      </div>
+    </div>
+  </header>
+
+  <main class="page-shell">
+    <div class="grid">
+      <aside class="stack">
+        <div class="status-box">
+          <h2>Current Session</h2>
+
+          <div class="status-row">
+            <span class="status-label">Status</span>
+            <span id="sessionStatus" class="inactive">Checking...</span>
+          </div>
+
+          <div class="status-row">
+            <span class="status-label">Active Session ID</span>
+            <strong id="activeSessionId" class="status-value">None</strong>
+          </div>
+
+          <div class="status-row">
+            <span class="status-label">Polling</span>
+            <strong class="neutral">Always On</strong>
+          </div>
+
+          <div class="status-row">
+            <span class="status-label">Last Updated</span>
+            <span id="lastUpdated" class="status-value">Never</span>
+          </div>
+
+          <div class="button-row">
+            <button class="success" onclick="startExercise()">Start Exercise</button>
+            <button class="danger" onclick="stopExercise()">Stop Exercise</button>
+          </div>
+        </div>
+
+        <div class="controls">
+          <h2>Load Custom Session ID</h2>
+
+          <div class="input-row">
+            <input
+              id="sessionIdInput"
+              type="text"
+              placeholder="Enter session ID, e.g. session_319d3239"
+            />
+
+            <button class="secondary" onclick="loadCustomSession()">Load Custom Session</button>
+          </div>
+
+          <p>
+            Expected data format:
+            <code>[[flex1, flex2, flex3], [flex1, flex2, flex3]]</code>
+          </p>
+        </div>
+
+        <div class="card">
+          <h2>Movement Rules</h2>
+          <p>
+            Baseline is <strong>15</strong> for each sensor. A repetition is counted when sensor activity rises above baseline and then returns back to baseline or below.
+          </p>
+          <table class="sensor-table">
+            <thead>
+              <tr>
+                <th>Sensor</th>
+                <th>Baseline</th>
+                <th>Current</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Flex 1</td>
+                <td>15</td>
+                <td id="flex1Current">--</td>
+                <td id="flex1Movement" class="movement-off">No movement</td>
+              </tr>
+              <tr>
+                <td>Flex 2</td>
+                <td>15</td>
+                <td id="flex2Current">--</td>
+                <td id="flex2Movement" class="movement-off">No movement</td>
+              </tr>
+              <tr>
+                <td>Flex 3</td>
+                <td>15</td>
+                <td id="flex3Current">--</td>
+                <td id="flex3Movement" class="movement-off">No movement</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </aside>
+
+      <section class="stack">
+        <div class="card">
+          <h2>Patient Exercise Summary</h2>
+
+          <div class="interpretation-banner">
+            <div>
+              <strong id="movementInterpretation">Waiting for patient data...</strong>
+              <p id="movementDetails" style="margin: 6px 0 0;">
+                Start or load a session to calculate repetitions and movement activity.
+              </p>
+            </div>
+            <span class="baseline-pill">Baseline: 15 each</span>
+          </div>
+
+          <div class="metrics-grid">
+            <div class="metric-card">
+              <div class="metric-label">Total Reps</div>
+              <div id="totalReps" class="metric-value">0</div>
+              <div class="metric-subtext">All sensors combined</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">Flex 1 Reps</div>
+              <div id="flex1Reps" class="metric-value">0</div>
+              <div class="metric-subtext">Sensor 1 return cycles</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">Flex 2 Reps</div>
+              <div id="flex2Reps" class="metric-value">0</div>
+              <div class="metric-subtext">Sensor 2 return cycles</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">Flex 3 Reps</div>
+              <div id="flex3Reps" class="metric-value">0</div>
+              <div class="metric-subtext">Sensor 3 return cycles</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="chart-container">
+          <h2>Flex Sensors</h2>
+          <canvas id="flexChart"></canvas>
+        </div>
+
+        <div class="raw-card">
+          <h2>Raw Response</h2>
+          <pre id="rawOutput">Waiting for data...</pre>
+        </div>
+      </section>
+    </div>
+
+    <p class="footer-note">
+      Clinical-style dashboard mockup for exercise monitoring. Not affiliated with or endorsed by Kaiser Permanente.
+    </p>
+  </main>
+
+  <script>
+    let flexChart = null;
+
+    let currentSessionId = null;
+    const POLL_INTERVAL_MS = 250;
+    const FLEX_BASELINE = 15;
+
+    document
+      .getElementById("sessionIdInput")
+      .addEventListener("keydown", function (event) {
+        if (event.key === "Enter") {
+          loadCustomSession();
+        }
+      });
+
+    async function startExercise() {
+      try {
+        const response = await fetch("/start_exercise", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({})
+        });
+
+        const json = await response.json();
+
+        document.getElementById("rawOutput").textContent =
+          JSON.stringify(json, null, 2);
+
+        if (!response.ok) {
+          alert(json.error || "Failed to start exercise.");
+          return;
+        }
+
+        currentSessionId = json.session_id;
+
+        document.getElementById("sessionStatus").textContent = "Active";
+        document.getElementById("sessionStatus").className = "active";
+        document.getElementById("activeSessionId").textContent = currentSessionId;
+        document.getElementById("sessionIdInput").value = currentSessionId;
+        document.getElementById("lastUpdated").textContent =
+          new Date().toLocaleTimeString();
+
+      } catch (error) {
+        console.error("Failed to start exercise:", error);
+        alert("Failed to start exercise.");
+      }
+    }
+
+    async function stopExercise() {
+      try {
+        const payload = {};
+
+        if (currentSessionId) {
+          payload.session_id = currentSessionId;
+        }
+
+        const response = await fetch("/stop_exercise", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify(payload)
+        });
+
+        const json = await response.json();
+
+        document.getElementById("rawOutput").textContent =
+          JSON.stringify(json, null, 2);
+
+        if (!response.ok) {
+          alert(json.error || "Failed to stop exercise.");
+          return;
+        }
+
+        document.getElementById("sessionStatus").textContent = "Stopped";
+        document.getElementById("sessionStatus").className = "inactive";
+        document.getElementById("activeSessionId").textContent =
+          json.session_id || "None";
+
+        currentSessionId = null;
+
+        document.getElementById("lastUpdated").textContent =
+          new Date().toLocaleTimeString();
+
+      } catch (error) {
+        console.error("Failed to stop exercise:", error);
+        alert("Failed to stop exercise.");
+      }
+    }
+
+    async function pollForever() {
+      await pollActiveSessionAndData();
+
+      setInterval(async () => {
+        await pollActiveSessionAndData();
+      }, POLL_INTERVAL_MS);
+    }
+
+    async function pollActiveSessionAndData() {
+      try {
+        const response = await fetch("/active-session");
+        const json = await response.json();
+
+        const statusEl = document.getElementById("sessionStatus");
+        const sessionEl = document.getElementById("activeSessionId");
+
+        if (!json.active || !json.session_id) {
+          statusEl.textContent = "No active session";
+          statusEl.className = "inactive";
+          sessionEl.textContent = "None";
+          currentSessionId = null;
+
+          document.getElementById("lastUpdated").textContent =
+            new Date().toLocaleTimeString();
+
+          return;
+        }
+
+        currentSessionId = json.session_id;
+
+        statusEl.textContent = "Active";
+        statusEl.className = "active";
+        sessionEl.textContent = currentSessionId;
+
+        document.getElementById("sessionIdInput").value = currentSessionId;
+
+        await loadExerciseData(currentSessionId, false);
+
+      } catch (error) {
+        console.error("Failed to poll active session:", error);
+      }
+    }
+
+    async function loadCustomSession() {
+      const sessionId = document.getElementById("sessionIdInput").value.trim();
+
+      if (!sessionId) {
+        alert("Please enter a session ID.");
+        return;
+      }
+
+      currentSessionId = sessionId;
+
+      document.getElementById("activeSessionId").textContent = sessionId;
+      document.getElementById("sessionStatus").textContent = "Custom Session";
+      document.getElementById("sessionStatus").className = "active";
+
+      await loadExerciseData(sessionId, true);
+    }
+
+    async function loadExerciseData(sessionId, showAlerts) {
+      const url = `/exercise-data?session_id=${encodeURIComponent(sessionId)}`;
+
+      try {
+        const response = await fetch(url);
+        const json = await response.json();
+
+        document.getElementById("rawOutput").textContent =
+          JSON.stringify(json, null, 2);
+
+        document.getElementById("lastUpdated").textContent =
+          new Date().toLocaleTimeString();
+
+        if (!response.ok || !json.found) {
+          if (showAlerts) {
+            alert(`No data found for session ID: ${sessionId}`);
+          }
+
+          clearCharts();
+          resetExerciseSummary();
+          return;
+        }
+
+        const parsed = parseExerciseData(json.batches);
+
+        updateFlexChart(parsed);
+        updateExerciseSummary(parsed);
+
+      } catch (error) {
+        console.error("Failed to load exercise data:", error);
+
+        if (showAlerts) {
+          alert("Failed to load exercise data.");
+        }
+      }
+    }
+
+    function parseExerciseData(batches) {
+      const labels = [];
+
+      const flex1 = [];
+      const flex2 = [];
+      const flex3 = [];
+
+      let sampleIndex = 0;
+
+      batches.forEach((batch) => {
+        const rows = batch.data || [];
+
+        rows.forEach((row) => {
+          if (!Array.isArray(row) || row.length < 3) {
+            return;
+          }
+
+          labels.push(sampleIndex);
+
+          flex1.push(Number(row[0]));
+          flex2.push(Number(row[1]));
+          flex3.push(Number(row[2]));
+
+          sampleIndex += 1;
+        });
+      });
+
+      return {
+        labels,
+        flex1,
+        flex2,
+        flex3
+      };
+    }
+
+    function countReps(sensorValues) {
+      let reps = 0;
+      let aboveBaseline = false;
+
+      sensorValues.forEach((value) => {
+        if (!Number.isFinite(value)) {
+          return;
+        }
+
+        if (value > FLEX_BASELINE && !aboveBaseline) {
+          aboveBaseline = true;
+        }
+
+        if (value <= FLEX_BASELINE && aboveBaseline) {
+          reps += 1;
+          aboveBaseline = false;
+        }
+      });
+
+      return reps;
+    }
+
+    function getLatestValue(values) {
+      if (!values || values.length === 0) {
+        return null;
+      }
+
+      for (let i = values.length - 1; i >= 0; i -= 1) {
+        if (Number.isFinite(values[i])) {
+          return values[i];
+        }
+      }
+
+      return null;
+    }
+
+    function updateSensorMovement(sensorNumber, latestValue) {
+      const currentEl = document.getElementById(`flex${sensorNumber}Current`);
+      const movementEl = document.getElementById(`flex${sensorNumber}Movement`);
+
+      if (latestValue === null) {
+        currentEl.textContent = "--";
+        movementEl.textContent = "No data";
+        movementEl.className = "movement-off";
+        return false;
+      }
+
+      const isMoving = latestValue > FLEX_BASELINE;
+
+      currentEl.textContent = latestValue;
+      movementEl.textContent = isMoving ? "Flexing" : "At baseline";
+      movementEl.className = isMoving ? "movement-on" : "movement-off";
+
+      return isMoving;
+    }
+
+    function updateExerciseSummary(data) {
+      const flex1Reps = countReps(data.flex1);
+      const flex2Reps = countReps(data.flex2);
+      const flex3Reps = countReps(data.flex3);
+      const totalReps = flex1Reps + flex2Reps + flex3Reps;
+
+      const latestFlex1 = getLatestValue(data.flex1);
+      const latestFlex2 = getLatestValue(data.flex2);
+      const latestFlex3 = getLatestValue(data.flex3);
+
+      const flex1Moving = updateSensorMovement(1, latestFlex1);
+      const flex2Moving = updateSensorMovement(2, latestFlex2);
+      const flex3Moving = updateSensorMovement(3, latestFlex3);
+      const activeSensors = [flex1Moving, flex2Moving, flex3Moving].filter(Boolean).length;
+
+      document.getElementById("totalReps").textContent = totalReps;
+      document.getElementById("flex1Reps").textContent = flex1Reps;
+      document.getElementById("flex2Reps").textContent = flex2Reps;
+      document.getElementById("flex3Reps").textContent = flex3Reps;
+
+      const interpretationEl = document.getElementById("movementInterpretation");
+      const detailsEl = document.getElementById("movementDetails");
+
+      if (data.labels.length === 0) {
+        interpretationEl.textContent = "Waiting for patient data...";
+        detailsEl.textContent = "No valid flex sensor samples were found for this session.";
+        return;
+      }
+
+      if (activeSensors > 0) {
+        interpretationEl.textContent = `Patient is actively flexing ${activeSensors} sensor${activeSensors === 1 ? "" : "s"}.`;
+      } else {
+        interpretationEl.textContent = "Patient is currently at or below baseline.";
+      }
+
+      detailsEl.textContent = `Processed ${data.labels.length} samples. Reps are counted when a sensor rises above ${FLEX_BASELINE} and returns to ${FLEX_BASELINE} or below.`;
+    }
+
+    function resetExerciseSummary() {
+      document.getElementById("totalReps").textContent = "0";
+      document.getElementById("flex1Reps").textContent = "0";
+      document.getElementById("flex2Reps").textContent = "0";
+      document.getElementById("flex3Reps").textContent = "0";
+
+      document.getElementById("movementInterpretation").textContent = "Waiting for patient data...";
+      document.getElementById("movementDetails").textContent =
+        "Start or load a session to calculate repetitions and movement activity.";
+
+      [1, 2, 3].forEach((sensorNumber) => {
+        document.getElementById(`flex${sensorNumber}Current`).textContent = "--";
+        document.getElementById(`flex${sensorNumber}Movement`).textContent = "No movement";
+        document.getElementById(`flex${sensorNumber}Movement`).className = "movement-off";
+      });
+    }
+
+    function clearCharts() {
+      if (flexChart) {
+        flexChart.destroy();
+        flexChart = null;
+      }
+    }
+
+    function updateFlexChart(data) {
+      const ctx = document.getElementById("flexChart");
+
+      if (!flexChart) {
+        flexChart = new Chart(ctx, {
+          type: "line",
+          data: {
+            labels: data.labels,
+            datasets: [
+              {
+                label: "Flex Sensor 1",
+                data: data.flex1,
+                borderWidth: 2,
+                tension: 0.2
+              },
+              {
+                label: "Flex Sensor 2",
+                data: data.flex2,
+                borderWidth: 2,
+                tension: 0.2
+              },
+              {
+                label: "Flex Sensor 3",
+                data: data.flex3,
+                borderWidth: 2,
+                tension: 0.2
+              },
+              {
+                label: "Baseline 15",
+                data: data.labels.map(() => FLEX_BASELINE),
+                borderWidth: 2,
+                borderDash: [8, 6],
+                pointRadius: 0,
+                tension: 0
+              }
+            ]
+          },
+          options: {
+            responsive: true,
+            animation: false,
+            interaction: {
+              mode: "index",
+              intersect: false
+            },
+            plugins: {
+              legend: {
+                labels: {
+                  usePointStyle: true
+                }
+              },
+              tooltip: {
+                callbacks: {
+                  afterBody: function (items) {
+                    if (!items || items.length === 0) {
+                      return "";
+                    }
+
+                    const value = items[0].parsed.y;
+                    return value > FLEX_BASELINE ? "Above baseline: flexing" : "At/below baseline";
+                  }
+                }
+              }
+            },
+            scales: {
+              x: {
+                title: {
+                  display: true,
+                  text: "Sample Index"
+                },
+                grid: {
+                  color: "rgba(216, 226, 234, 0.65)"
+                }
+              },
+              y: {
+                title: {
+                  display: true,
+                  text: "Flex Value"
+                },
+                grid: {
+                  color: "rgba(216, 226, 234, 0.85)"
+                }
+              }
+            }
+          }
+        });
+      } else {
+        flexChart.data.labels = data.labels;
+        flexChart.data.datasets[0].data = data.flex1;
+        flexChart.data.datasets[1].data = data.flex2;
+        flexChart.data.datasets[2].data = data.flex3;
+        flexChart.data.datasets[3].data = data.labels.map(() => FLEX_BASELINE);
+        flexChart.update();
+      }
+    }
+
+    window.onload = function () {
+      pollForever();
+    };
+  </script>
+</body>
+</html>
