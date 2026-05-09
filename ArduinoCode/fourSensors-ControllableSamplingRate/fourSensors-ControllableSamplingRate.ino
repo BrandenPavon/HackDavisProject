@@ -31,7 +31,8 @@ void loop() {
       // With your divider:
       // higher raw = lower flex resistance
       // lower raw = higher flex resistance
-      float scaled = (clampedRaw - rawMin) * 100.0 / (rawMax - rawMin);
+      // lower raw value = more bend = higher percentage
+      float scaled = (rawMax - clampedRaw) * 100.0 / (rawMax - rawMin);
 
       Serial.print(raw);
       Serial.print(",");
