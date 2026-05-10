@@ -63,7 +63,7 @@ def main():
     #Send 5 seconds of simulated flex data
     for batch_number in range(1, 6):
         send_flex_data(batch_number)
-        time.sleep(1)
+        time.sleep(0.01)
 
     stop_exercise()
 
