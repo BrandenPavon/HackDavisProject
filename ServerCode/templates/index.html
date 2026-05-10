@@ -1,3 +1,1651 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Patient Flex Sensor Dashboard</title>
 
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
 
-<p>Main</p>
+  <style>
+    :root {
+      --kp-blue: #0079c1;
+      --kp-blue-dark: #005b9f;
+      --kp-blue-light: #e8f4fb;
+      --kp-teal: #00a3ad;
+      --kp-green: #2e8540;
+      --kp-red: #c62828;
+      --kp-yellow: #f8c246;
+      --ink: #1f2933;
+      --muted: #52616b;
+      --line: #d8e2ea;
+      --surface: #ffffff;
+      --background: #f3f8fb;
+      --shadow: 0 8px 24px rgba(0, 91, 159, 0.12);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: Arial, Helvetica, sans-serif;
+      margin: 0;
+      background:
+        radial-gradient(circle at top left, rgba(0, 121, 193, 0.13), transparent 32%),
+        linear-gradient(180deg, #f7fbfd 0%, var(--background) 100%);
+      color: var(--ink);
+    }
+
+    .page-shell {
+      width: min(1180px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 28px 0 40px;
+    }
+
+    .topbar {
+      background: var(--surface);
+      border-bottom: 5px solid var(--kp-blue);
+      box-shadow: var(--shadow);
+    }
+
+    .topbar-inner {
+      width: min(1180px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 20px 0 18px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+      flex-wrap: wrap;
+    }
+
+    .brand-lockup {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+
+    .brand-mark {
+      width: 54px;
+      height: 54px;
+      border-radius: 18px;
+      background: linear-gradient(135deg, var(--kp-blue), var(--kp-teal));
+      display: grid;
+      place-items: center;
+      color: white;
+      font-weight: 800;
+      font-size: 20px;
+      letter-spacing: -0.5px;
+      box-shadow: 0 8px 18px rgba(0, 121, 193, 0.25);
+    }
+
+    .eyebrow {
+      margin: 0 0 4px;
+      color: var(--kp-blue-dark);
+      font-size: 13px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    h1 {
+      margin: 0;
+      color: var(--ink);
+      font-size: clamp(26px, 4vw, 40px);
+      line-height: 1.1;
+    }
+
+    .topbar-note {
+      color: var(--muted);
+      font-size: 15px;
+      max-width: 360px;
+      line-height: 1.45;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: minmax(280px, 390px) 1fr;
+      gap: 20px;
+      align-items: start;
+    }
+
+    .stack {
+      display: grid;
+      gap: 20px;
+    }
+
+    .card,
+    .controls,
+    .status-box,
+    .chart-container,
+    .raw-card {
+      background: var(--surface);
+      padding: 22px;
+      border-radius: 18px;
+      border: 1px solid var(--line);
+      box-shadow: var(--shadow);
+      margin-bottom: 20px;
+    }
+
+    .grid .card,
+    .grid .controls,
+    .grid .status-box,
+    .grid .chart-container,
+    .grid .raw-card {
+      margin-bottom: 0;
+    }
+
+    h2 {
+      margin: 0 0 16px;
+      font-size: 20px;
+      color: var(--kp-blue-dark);
+    }
+
+    p {
+      color: var(--muted);
+      line-height: 1.45;
+    }
+
+    .status-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 11px 0;
+      border-bottom: 1px solid var(--line);
+      align-items: center;
+    }
+
+    .status-row:last-of-type {
+      border-bottom: 0;
+    }
+
+    .status-label {
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .status-value {
+      text-align: right;
+      font-weight: 700;
+      color: var(--ink);
+      overflow-wrap: anywhere;
+    }
+
+    .active,
+    .inactive,
+    .neutral {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 5px 10px;
+      border-radius: 999px;
+      font-weight: 700;
+      font-size: 14px;
+    }
+
+    .active {
+      color: var(--kp-green);
+      background: #eaf6ed;
+    }
+
+    .inactive {
+      color: var(--kp-red);
+      background: #fdecec;
+    }
+
+    .neutral {
+      color: var(--kp-blue-dark);
+      background: var(--kp-blue-light);
+    }
+
+    .active::before,
+    .inactive::before,
+    .neutral::before {
+      content: "";
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+
+    .button-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 18px;
+    }
+
+    button {
+      padding: 11px 16px;
+      font-size: 15px;
+      font-weight: 700;
+      cursor: pointer;
+      border: 0;
+      border-radius: 10px;
+      transition: transform 120ms ease, box-shadow 120ms ease, background 120ms ease;
+      margin-left: 0;
+      margin-top: 0;
+    }
+
+    button:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 8px 14px rgba(31, 41, 51, 0.13);
+    }
+
+    .danger {
+      background: var(--kp-red);
+      color: white;
+    }
+
+    .success {
+      background: var(--kp-blue);
+      color: white;
+    }
+
+    .success:hover {
+      background: var(--kp-blue-dark);
+    }
+
+    .secondary {
+      background: var(--kp-blue-light);
+      color: var(--kp-blue-dark);
+      border: 1px solid #b9ddf2;
+    }
+
+    .input-row {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    input {
+      padding: 12px 13px;
+      width: min(100%, 360px);
+      font-size: 15px;
+      border-radius: 10px;
+      border: 1px solid #b9c8d4;
+      outline: none;
+      background: #fbfdff;
+    }
+
+    input:focus {
+      border-color: var(--kp-blue);
+      box-shadow: 0 0 0 4px rgba(0, 121, 193, 0.12);
+    }
+
+    code {
+      color: var(--kp-blue-dark);
+      background: var(--kp-blue-light);
+      padding: 2px 6px;
+      border-radius: 6px;
+    }
+
+    .metrics-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 14px;
+      margin-bottom: 20px;
+    }
+
+    .metric-card {
+      background: linear-gradient(180deg, #ffffff 0%, #f8fcfe 100%);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 18px;
+      box-shadow: 0 5px 18px rgba(0, 91, 159, 0.08);
+    }
+
+    .metric-label {
+      color: var(--muted);
+      font-size: 13px;
+      margin-bottom: 7px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .metric-value {
+      color: var(--kp-blue-dark);
+      font-size: 32px;
+      line-height: 1;
+      font-weight: 800;
+    }
+
+    .metric-subtext {
+      color: var(--muted);
+      font-size: 13px;
+      margin-top: 8px;
+    }
+
+    .interpretation-banner {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 14px;
+      align-items: center;
+      padding: 16px;
+      margin-bottom: 18px;
+      border-radius: 16px;
+      background: var(--kp-blue-light);
+      border: 1px solid #b9ddf2;
+    }
+
+    .interpretation-banner strong {
+      color: var(--kp-blue-dark);
+    }
+
+    .baseline-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--kp-blue-dark);
+      background: white;
+      border: 1px solid #b9ddf2;
+      padding: 8px 11px;
+      border-radius: 999px;
+      font-weight: 800;
+      white-space: nowrap;
+    }
+
+    .sensor-table {
+      width: 100%;
+      border-collapse: collapse;
+      overflow: hidden;
+      border-radius: 14px;
+      border: 1px solid var(--line);
+      margin-top: 12px;
+    }
+
+    .sensor-table th,
+    .sensor-table td {
+      padding: 12px 10px;
+      text-align: left;
+      border-bottom: 1px solid var(--line);
+      font-size: 14px;
+    }
+
+    .sensor-table th {
+      background: #f0f8fc;
+      color: var(--kp-blue-dark);
+      font-size: 13px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .sensor-table tr:last-child td {
+      border-bottom: 0;
+    }
+
+    .movement-on {
+      color: var(--kp-green);
+      font-weight: 800;
+    }
+
+    .movement-off {
+      color: var(--muted);
+      font-weight: 700;
+    }
+
+    canvas {
+      max-height: 500px;
+    }
+
+    pre {
+      background: #102230;
+      color: #9ff0b5;
+      padding: 16px;
+      border-radius: 14px;
+      overflow-x: auto;
+      max-height: 300px;
+      border: 1px solid #18364a;
+      white-space: pre-wrap;
+    }
+
+    .footer-note {
+      color: var(--muted);
+      font-size: 13px;
+      margin-top: 18px;
+      text-align: center;
+    }
+
+    @media (max-width: 900px) {
+      .grid {
+        grid-template-columns: 1fr;
+      }
+
+      .metrics-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
+
+    @media (max-width: 560px) {
+      .metrics-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .interpretation-banner {
+        grid-template-columns: 1fr;
+      }
+
+      .status-row {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+
+      .status-value {
+        text-align: left;
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand-lockup">
+        <div class="brand-mark">KP</div>
+        <div>
+          <p class="eyebrow">Patient movement monitoring</p>
+          <h1>Flex Sensor Exercise Dashboard</h1>
+        </div>
+      </div>
+      <div class="topbar-note">
+        Real-time session tracking for patient flex sensor exercises, movement interpretation, and repetition counting.
+      </div>
+    </div>
+  </header>
+
+  <main class="page-shell">
+    <div class="grid">
+      <aside class="stack">
+        <div class="status-box">
+          <h2>Current Session</h2>
+
+          <div class="status-row">
+            <span class="status-label">Status</span>
+            <span id="sessionStatus" class="inactive">Checking...</span>
+          </div>
+
+          <div class="status-row">
+            <span class="status-label">Active Session ID</span>
+            <strong id="activeSessionId" class="status-value">None</strong>
+          </div>
+
+          <div class="status-row">
+            <span class="status-label">Connection</span>
+            <strong id="connectionStatus" class="neutral">Starting...</strong>
+          </div>
+
+          <div class="status-row">
+            <span class="status-label">Last Updated</span>
+            <span id="lastUpdated" class="status-value">Never</span>
+          </div>
+
+          <div class="button-row">
+            <button class="success" onclick="startExercise()">Start Exercise</button>
+            <button class="danger" onclick="stopExercise()">Stop Exercise</button>
+          </div>
+        </div>
+
+        <div class="controls">
+          <h2>Load Custom Session ID</h2>
+
+          <div class="input-row">
+            <input
+              id="sessionIdInput"
+              type="text"
+              placeholder="Enter session ID, e.g. session_319d3239"
+            />
+
+            <button class="secondary" onclick="loadCustomSession()">Load Custom Session</button>
+          </div>
+
+          <p>
+            Expected data format:
+            <code>[[flex1, flex2, flex3], [flex1, flex2, flex3]]</code>
+          </p>
+        </div>
+
+        <div class="card">
+          <h2>Movement Rules</h2>
+          <p>
+            Baseline is <strong>15</strong> for each sensor. A repetition is counted when sensor activity rises above baseline and then returns back to baseline or below.
+          </p>
+          <table class="sensor-table">
+            <thead>
+              <tr>
+                <th>Sensor</th>
+                <th>Baseline</th>
+                <th>Current</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Flex 1</td>
+                <td>15</td>
+                <td id="flex1Current">--</td>
+                <td id="flex1Movement" class="movement-off">No movement</td>
+              </tr>
+              <tr>
+                <td>Flex 2</td>
+                <td>15</td>
+                <td id="flex2Current">--</td>
+                <td id="flex2Movement" class="movement-off">No movement</td>
+              </tr>
+              <tr>
+                <td>Flex 3</td>
+                <td>15</td>
+                <td id="flex3Current">--</td>
+                <td id="flex3Movement" class="movement-off">No movement</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </aside>
+
+      <section class="stack">
+        <div class="card">
+          <h2>Patient Exercise Summary</h2>
+
+          <div class="interpretation-banner">
+            <div>
+              <strong id="movementInterpretation">Waiting for patient data...</strong>
+              <p id="movementDetails" style="margin: 6px 0 0;">
+                Start or load a session to calculate repetitions and movement activity.
+              </p>
+            </div>
+            <span class="baseline-pill">Baseline: 15 each</span>
+          </div>
+
+          <div class="metrics-grid">
+            <div class="metric-card">
+              <div class="metric-label">Total Reps</div>
+              <div id="totalReps" class="metric-value">0</div>
+              <div class="metric-subtext">All sensors combined</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">Flex 1 Reps</div>
+              <div id="flex1Reps" class="metric-value">0</div>
+              <div class="metric-subtext">Sensor 1 return cycles</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">Flex 2 Reps</div>
+              <div id="flex2Reps" class="metric-value">0</div>
+              <div class="metric-subtext">Sensor 2 return cycles</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">Flex 3 Reps</div>
+              <div id="flex3Reps" class="metric-value">0</div>
+              <div class="metric-subtext">Sensor 3 return cycles</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="chart-container">
+          <h2>Flex Sensors</h2>
+          <canvas id="flexChart"></canvas>
+        </div>
+
+        <div class="raw-card">
+          <h2>Raw Response</h2>
+          <pre id="rawOutput">Waiting for WebSocket...</pre>
+        </div>
+      </section>
+    </div>
+
+    <p class="footer-note">
+      Clinical-style dashboard mockup for exercise monitoring. Not affiliated with or endorsed by Kaiser Permanente.
+    </p>
+  </main>
+
+  <script>
+  let socket = null;
+  let currentSessionId = null;
+
+  const RAW_OUTPUT_INTERVAL_MS = 5000;
+  const FLEX_BASELINE = 15;
+  const MAX_LIVE_SAMPLES = 100;
+
+  let lastRawOutputMs = 0;
+
+  let fullData = createEmptyDataStore();
+  let liveStats = createEmptyStats();
+
+  document
+    .getElementById("sessionIdInput")
+    .addEventListener("keydown", function (event) {
+      if (event.key === "Enter") {
+        loadCustomSession();
+      }
+    });
+
+  function debugLog(label, data = null) {
+    const time = new Date().toLocaleTimeString();
+
+    if (data === null || data === undefined) {
+      console.log(`[${time}] ${label}`);
+      return;
+    }
+
+    console.log(`[${time}] ${label}`, data);
+  }
+
+  function debugWarn(label, data = null) {
+    const time = new Date().toLocaleTimeString();
+
+    if (data === null || data === undefined) {
+      console.warn(`[${time}] ${label}`);
+      return;
+    }
+
+    console.warn(`[${time}] ${label}`, data);
+  }
+
+  function debugError(label, data = null) {
+    const time = new Date().toLocaleTimeString();
+
+    if (data === null || data === undefined) {
+      console.error(`[${time}] ${label}`);
+      return;
+    }
+
+    console.error(`[${time}] ${label}`, data);
+  }
+
+  function createEmptyDataStore() {
+    return {
+      globalSampleIndex: 0,
+      sampleIndexes: [],
+      sampleTimes: [],
+      flex1: [],
+      flex2: [],
+      flex3: [],
+      baseline: []
+    };
+  }
+
+  function createEmptyStats() {
+    return {
+      reps: [0, 0, 0],
+      aboveBaseline: [false, false, false],
+      latest: [null, null, null],
+      totalSamples: 0,
+      totalBatches: 0,
+      firstTime: null,
+      lastTime: null
+    };
+  }
+
+  function resetLiveMemory() {
+    debugLog("Resetting live memory");
+
+    fullData = createEmptyDataStore();
+    liveStats = createEmptyStats();
+  }
+
+  function setConnectionStatus(text, className) {
+    const el = document.getElementById("connectionStatus");
+
+    if (!el) {
+      debugWarn("connectionStatus element missing");
+      return;
+    }
+
+    el.textContent = text;
+    el.className = className;
+  }
+
+  function formatTime(date) {
+    if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
+      return "--";
+    }
+
+    return date.toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit"
+    });
+  }
+
+  function formatDateTime(date) {
+    if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
+      return "--";
+    }
+
+    return date.toLocaleString([], {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit"
+    });
+  }
+
+  function getBatchStopTime(batch) {
+    const createdAt = batch.created_at ? new Date(batch.created_at) : null;
+
+    if (!createdAt || Number.isNaN(createdAt.getTime())) {
+      return null;
+    }
+
+    return createdAt;
+  }
+
+  function getBatchStartTime(batch) {
+    const stopTime = getBatchStopTime(batch);
+
+    if (!stopTime) {
+      return null;
+    }
+
+    const durationSeconds = Number(batch.batch_duration_seconds || 0);
+
+    return new Date(stopTime.getTime() - durationSeconds * 1000);
+  }
+
+  function getSampleTimestamp(batch, rowIndex, totalRows) {
+    const startTime = getBatchStartTime(batch);
+    const stopTime = getBatchStopTime(batch);
+
+    if (!startTime || !stopTime) {
+      return null;
+    }
+
+    if (!totalRows || totalRows <= 1) {
+      return stopTime;
+    }
+
+    const progress = rowIndex / (totalRows - 1);
+
+    return new Date(
+      startTime.getTime() +
+      progress * (stopTime.getTime() - startTime.getTime())
+    );
+  }
+
+  function updateStatsForSensor(sensorIndex, value) {
+    if (!Number.isFinite(value)) {
+      return;
+    }
+
+    if (value > FLEX_BASELINE && !liveStats.aboveBaseline[sensorIndex]) {
+      liveStats.aboveBaseline[sensorIndex] = true;
+    }
+
+    if (value <= FLEX_BASELINE && liveStats.aboveBaseline[sensorIndex]) {
+      liveStats.reps[sensorIndex] += 1;
+      liveStats.aboveBaseline[sensorIndex] = false;
+    }
+  }
+
+  function appendBatchToFullData(batch) {
+    if (!batch) {
+      debugWarn("appendBatchToFullData skipped: missing batch");
+      return;
+    }
+
+    if (!Array.isArray(batch.data)) {
+      debugWarn("appendBatchToFullData skipped: batch.data is not an array", batch);
+      return;
+    }
+
+    const rows = batch.data;
+
+    if (rows.length === 0) {
+      debugWarn("appendBatchToFullData skipped: batch.data is empty", batch);
+      return;
+    }
+
+    liveStats.totalBatches += 1;
+
+    let validRows = 0;
+
+    for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
+      const row = rows[rowIndex];
+
+      if (!Array.isArray(row) || row.length < 3) {
+        debugWarn("Skipping invalid row", row);
+        continue;
+      }
+
+      const sampleTime = getSampleTimestamp(batch, rowIndex, rows.length);
+
+      const v1 = Number(row[0]);
+      const v2 = Number(row[1]);
+      const v3 = Number(row[2]);
+
+      fullData.sampleIndexes.push(fullData.globalSampleIndex);
+      fullData.sampleTimes.push(sampleTime);
+      fullData.flex1.push(v1);
+      fullData.flex2.push(v2);
+      fullData.flex3.push(v3);
+      fullData.baseline.push(FLEX_BASELINE);
+      fullData.globalSampleIndex += 1;
+
+      updateStatsForSensor(0, v1);
+      updateStatsForSensor(1, v2);
+      updateStatsForSensor(2, v3);
+
+      if (Number.isFinite(v1)) {
+        liveStats.latest[0] = v1;
+      }
+
+      if (Number.isFinite(v2)) {
+        liveStats.latest[1] = v2;
+      }
+
+      if (Number.isFinite(v3)) {
+        liveStats.latest[2] = v3;
+      }
+
+      if (!liveStats.firstTime && sampleTime) {
+        liveStats.firstTime = sampleTime;
+      }
+
+      if (sampleTime) {
+        liveStats.lastTime = sampleTime;
+      }
+
+      liveStats.totalSamples += 1;
+      validRows += 1;
+    }
+
+    trimLiveWindow();
+
+    debugLog("Batch appended", {
+      validRows,
+      visibleSamples: fullData.sampleIndexes.length,
+      totalSamples: liveStats.totalSamples,
+      latest: liveStats.latest.slice(),
+      lastFlex1: fullData.flex1.slice(-5),
+      lastFlex2: fullData.flex2.slice(-5),
+      lastFlex3: fullData.flex3.slice(-5)
+    });
+  }
+
+  function appendBatchesToFullData(batches) {
+    if (!Array.isArray(batches)) {
+      debugWarn("appendBatchesToFullData skipped: batches is not an array", batches);
+      return;
+    }
+
+    for (let i = 0; i < batches.length; i += 1) {
+      appendBatchToFullData(batches[i]);
+    }
+  }
+
+  function trimLiveWindow() {
+    const extra = fullData.sampleTimes.length - MAX_LIVE_SAMPLES;
+
+    if (extra <= 0) {
+      return;
+    }
+
+    fullData.sampleIndexes.splice(0, extra);
+    fullData.sampleTimes.splice(0, extra);
+    fullData.flex1.splice(0, extra);
+    fullData.flex2.splice(0, extra);
+    fullData.flex3.splice(0, extra);
+    fullData.baseline.splice(0, extra);
+
+    debugLog("Trimmed live window", {
+      removedSamples: extra,
+      remainingSamples: fullData.sampleTimes.length
+    });
+  }
+
+  function connectSocket() {
+    debugLog("connectSocket called");
+
+    if (typeof io === "undefined") {
+      debugError("Socket.IO client failed to load. The io global is undefined.");
+      setRawOutputText("Socket.IO client failed to load. Check the socket.io script tag.", true);
+      setConnectionStatus("Socket script missing", "inactive");
+      return;
+    }
+
+    setConnectionStatus("Connecting...", "neutral");
+
+    socket = io(window.location.origin, {
+      transports: ["polling", "websocket"],
+      reconnection: true,
+      reconnectionAttempts: Infinity,
+      reconnectionDelay: 500,
+      timeout: 5000
+    });
+
+    socket.on("connect", function () {
+      debugLog("Socket connected", {
+        socketId: socket.id,
+        transport: socket.io.engine.transport.name
+      });
+
+      setConnectionStatus("Connected", "active");
+
+      setRawOutputText(
+        `WebSocket connected
+Socket ID: ${socket.id}
+Transport: ${socket.io.engine.transport.name}`,
+        true
+      );
+
+      socket.emit("ping_test");
+      socket.emit("request_active_session");
+    });
+
+    socket.io.on("upgrade", function () {
+      debugLog("Socket transport upgraded", {
+        transport: socket.io.engine.transport.name
+      });
+    });
+
+    socket.on("connect_error", function (error) {
+      debugError("Socket connection error", error);
+
+      setConnectionStatus("Socket error", "inactive");
+
+      setRawOutputText(
+        `WebSocket connection error
+${error && error.message ? error.message : String(error)}
+
+Open /socket-debug in your browser.
+Make sure you started the server with: python main.py`,
+        true
+      );
+    });
+
+    socket.on("pong_test", function (data) {
+      debugLog("Received pong_test", data);
+
+      setRawOutputText(
+        `WebSocket test OK
+${JSON.stringify(data, null, 2)}`,
+        true
+      );
+    });
+
+    socket.on("disconnect", function (reason) {
+      debugWarn("Socket disconnected", reason);
+
+      setConnectionStatus("Disconnected", "inactive");
+
+      setRawOutputText(
+        `WebSocket disconnected
+Reason: ${reason}`,
+        true
+      );
+
+      document.getElementById("sessionStatus").textContent = "Disconnected";
+      document.getElementById("sessionStatus").className = "inactive";
+    });
+
+    socket.on("active_session_state", function (data) {
+      debugLog("Received active_session_state", data);
+      handleSessionState(data);
+    });
+
+    socket.on("active_session_snapshot", function (data) {
+      debugLog("Received active_session_snapshot", {
+        session_id: data && data.session_id,
+        batchCount: data && Array.isArray(data.batches) ? data.batches.length : null,
+        local_batch_count: data && data.local_batch_count
+      });
+
+      if (!data || !data.session_id) {
+        debugWarn("Ignoring active_session_snapshot because no session_id exists", data);
+        return;
+      }
+
+      currentSessionId = data.session_id;
+      resetLiveMemory();
+
+      appendBatchesToFullData(data.batches || []);
+
+      document.getElementById("sessionStatus").textContent = "Active";
+      document.getElementById("sessionStatus").className = "active";
+      document.getElementById("activeSessionId").textContent = currentSessionId;
+      document.getElementById("sessionIdInput").value = currentSessionId;
+      document.getElementById("lastUpdated").textContent =
+        new Date().toLocaleTimeString();
+
+      updateExerciseSummaryFromStats();
+      renderChartNow();
+
+      setRawOutputText(
+        `Loaded active session snapshot
+Session: ${currentSessionId}
+Batches loaded: ${(data.batches || []).length}
+Visible samples: ${fullData.sampleTimes.length}
+Total processed: ${liveStats.totalSamples}`,
+        true
+      );
+    });
+
+    socket.on("session_started", function (data) {
+      debugLog("Received session_started", data);
+
+      currentSessionId = data.session_id;
+      resetLiveMemory();
+      clearCharts();
+      resetExerciseSummary();
+
+      document.getElementById("sessionStatus").textContent = "Active";
+      document.getElementById("sessionStatus").className = "active";
+      document.getElementById("activeSessionId").textContent = currentSessionId;
+      document.getElementById("sessionIdInput").value = currentSessionId;
+      document.getElementById("lastUpdated").textContent =
+        new Date().toLocaleTimeString();
+
+      setRawOutputText(
+        `Session started
+Session: ${currentSessionId}`,
+        true
+      );
+    });
+
+    socket.on("flex_batch", function (data) {
+      debugLog("Received flex_batch", {
+        session_id: data && data.session_id,
+        local_batch_count: data && data.local_batch_count,
+        batchRows: data && data.batch && Array.isArray(data.batch.data) ? data.batch.data.length : null,
+        firstRow: data && data.batch && Array.isArray(data.batch.data) ? data.batch.data[0] : null
+      });
+
+      if (!data || !data.batch) {
+        debugWarn("Ignoring flex_batch because data.batch is missing", data);
+        return;
+      }
+
+      if (data.session_id !== currentSessionId) {
+        debugWarn("flex_batch session changed; resetting graph", {
+          oldSession: currentSessionId,
+          newSession: data.session_id
+        });
+
+        currentSessionId = data.session_id;
+        resetLiveMemory();
+        clearCharts();
+        resetExerciseSummary();
+      }
+
+      document.getElementById("sessionStatus").textContent = "Active";
+      document.getElementById("sessionStatus").className = "active";
+      document.getElementById("activeSessionId").textContent = currentSessionId;
+      document.getElementById("sessionIdInput").value = currentSessionId;
+      document.getElementById("lastUpdated").textContent =
+        new Date().toLocaleTimeString();
+
+      appendBatchToFullData(data.batch);
+
+      updateExerciseSummaryFromStats();
+      renderChartNow();
+
+      setRawOutputText(
+        `WebSocket live
+Session: ${currentSessionId}
+Local batches: ${data.local_batch_count}
+Visible samples: ${fullData.sampleTimes.length}
+Total processed: ${liveStats.totalSamples}
+Latest:
+Flex 1: ${liveStats.latest[0]}
+Flex 2: ${liveStats.latest[1]}
+Flex 3: ${liveStats.latest[2]}`,
+        true
+      );
+    });
+
+    socket.on("session_stopped", function (data) {
+      debugLog("Received session_stopped", data);
+
+      document.getElementById("sessionStatus").textContent = "Stopped";
+      document.getElementById("sessionStatus").className = "inactive";
+      document.getElementById("activeSessionId").textContent =
+        data.session_id || "None";
+      document.getElementById("lastUpdated").textContent =
+        new Date().toLocaleTimeString();
+
+      setRawOutputText(
+        `Session stopped
+Session: ${data.session_id}
+Saved batches: ${data.database_saved_count}`,
+        true
+      );
+
+      currentSessionId = null;
+    });
+  }
+
+  function handleSessionState(data) {
+    const statusEl = document.getElementById("sessionStatus");
+    const sessionEl = document.getElementById("activeSessionId");
+
+    if (!data || !data.active || !data.session_id) {
+      debugLog("No active session from active_session_state");
+
+      statusEl.textContent = "No active session";
+      statusEl.className = "inactive";
+      sessionEl.textContent = "None";
+      currentSessionId = null;
+      return;
+    }
+
+    currentSessionId = data.session_id;
+
+    statusEl.textContent = "Active";
+    statusEl.className = "active";
+    sessionEl.textContent = currentSessionId;
+    document.getElementById("sessionIdInput").value = currentSessionId;
+    document.getElementById("lastUpdated").textContent =
+      new Date().toLocaleTimeString();
+  }
+
+  async function startExercise() {
+    debugLog("Start Exercise clicked");
+
+    try {
+      const response = await fetch("/start_exercise", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({})
+      });
+
+      const json = await response.json();
+
+      debugLog("start_exercise response", json);
+
+      if (!response.ok) {
+        alert(json.error || "Failed to start exercise.");
+        return;
+      }
+
+      currentSessionId = json.session_id;
+      resetLiveMemory();
+      clearCharts();
+      resetExerciseSummary();
+
+      document.getElementById("sessionStatus").textContent = "Active";
+      document.getElementById("sessionStatus").className = "active";
+      document.getElementById("activeSessionId").textContent = currentSessionId;
+      document.getElementById("sessionIdInput").value = currentSessionId;
+      document.getElementById("lastUpdated").textContent =
+        new Date().toLocaleTimeString();
+
+      setRawOutputText(
+        `Session started
+Session: ${currentSessionId}`,
+        true
+      );
+
+    } catch (error) {
+      debugError("Failed to start exercise", error);
+      alert("Failed to start exercise.");
+      setRawOutputText(`Failed to start exercise\n${error}`, true);
+    }
+  }
+
+  async function stopExercise() {
+    debugLog("Stop Exercise clicked");
+
+    try {
+      const payload = {};
+
+      if (currentSessionId) {
+        payload.session_id = currentSessionId;
+      }
+
+      const response = await fetch("/stop_exercise", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(payload)
+      });
+
+      const json = await response.json();
+
+      debugLog("stop_exercise response", json);
+
+      if (!response.ok) {
+        alert(json.error || "Failed to stop exercise.");
+        return;
+      }
+
+      document.getElementById("sessionStatus").textContent = "Stopped";
+      document.getElementById("sessionStatus").className = "inactive";
+      document.getElementById("activeSessionId").textContent =
+        json.session_id || "None";
+
+      setRawOutputText(
+        `Session stopped
+Session: ${json.session_id}
+Saved batches: ${json.database_saved_count}`,
+        true
+      );
+
+      currentSessionId = null;
+
+    } catch (error) {
+      debugError("Failed to stop exercise", error);
+      alert("Failed to stop exercise.");
+      setRawOutputText(`Failed to stop exercise\n${error}`, true);
+    }
+  }
+
+  async function loadCustomSession() {
+    const sessionId = document.getElementById("sessionIdInput").value.trim();
+
+    debugLog("Load custom session clicked", sessionId);
+
+    if (!sessionId) {
+      alert("Please enter a session ID.");
+      return;
+    }
+
+    currentSessionId = sessionId;
+    resetLiveMemory();
+
+    document.getElementById("activeSessionId").textContent = sessionId;
+    document.getElementById("sessionStatus").textContent = "Custom Session";
+    document.getElementById("sessionStatus").className = "neutral";
+
+    await loadExerciseDataFromDatabase(sessionId, true);
+  }
+
+  async function loadExerciseDataFromDatabase(sessionId, showAlerts) {
+    const url = `/exercise-data?session_id=${encodeURIComponent(sessionId)}`;
+
+    debugLog("Loading exercise data from database", url);
+
+    try {
+      const response = await fetch(url, {
+        cache: "no-store"
+      });
+
+      const json = await response.json();
+
+      debugLog("exercise-data response", {
+        ok: response.ok,
+        found: json.found,
+        batchCount: Array.isArray(json.batches) ? json.batches.length : null
+      });
+
+      document.getElementById("lastUpdated").textContent =
+        new Date().toLocaleTimeString();
+
+      if (!response.ok || !json.found) {
+        if (showAlerts) {
+          alert(`No database data found for session ID: ${sessionId}`);
+        }
+
+        clearCharts();
+        resetExerciseSummary();
+        resetLiveMemory();
+        return;
+      }
+
+      resetLiveMemory();
+      appendBatchesToFullData(json.batches || []);
+
+      updateExerciseSummaryFromStats();
+      renderChartNow();
+
+      setRawOutputText(
+        `Loaded from database
+Session: ${sessionId}
+Visible samples: ${fullData.sampleTimes.length}
+Total processed: ${liveStats.totalSamples}`,
+        true
+      );
+
+    } catch (error) {
+      debugError("Failed to load exercise data", error);
+
+      if (showAlerts) {
+        alert("Failed to load exercise data.");
+      }
+
+      setRawOutputText(`Failed to load exercise data\n${error}`, true);
+    }
+  }
+
+  function setRawOutputText(value, force = false) {
+    const now = performance.now();
+
+    if (!force && now - lastRawOutputMs < RAW_OUTPUT_INTERVAL_MS) {
+      return;
+    }
+
+    lastRawOutputMs = now;
+    document.getElementById("rawOutput").textContent = value;
+  }
+
+  function updateSensorMovement(sensorNumber, latestValue) {
+    const currentEl = document.getElementById(`flex${sensorNumber}Current`);
+    const movementEl = document.getElementById(`flex${sensorNumber}Movement`);
+
+    if (latestValue === null) {
+      currentEl.textContent = "--";
+      movementEl.textContent = "No data";
+      movementEl.className = "movement-off";
+      return false;
+    }
+
+    const isMoving = latestValue > FLEX_BASELINE;
+
+    currentEl.textContent = Number.isFinite(latestValue)
+      ? latestValue.toFixed(1)
+      : String(latestValue);
+
+    movementEl.textContent = isMoving ? "Flexing" : "At baseline";
+    movementEl.className = isMoving ? "movement-on" : "movement-off";
+
+    return isMoving;
+  }
+
+  function updateExerciseSummaryFromStats() {
+    const flex1Reps = liveStats.reps[0];
+    const flex2Reps = liveStats.reps[1];
+    const flex3Reps = liveStats.reps[2];
+    const totalReps = flex1Reps + flex2Reps + flex3Reps;
+
+    const latestFlex1 = liveStats.latest[0];
+    const latestFlex2 = liveStats.latest[1];
+    const latestFlex3 = liveStats.latest[2];
+
+    const flex1Moving = updateSensorMovement(1, latestFlex1);
+    const flex2Moving = updateSensorMovement(2, latestFlex2);
+    const flex3Moving = updateSensorMovement(3, latestFlex3);
+
+    const activeSensors = [flex1Moving, flex2Moving, flex3Moving].filter(Boolean).length;
+
+    document.getElementById("totalReps").textContent = totalReps;
+    document.getElementById("flex1Reps").textContent = flex1Reps;
+    document.getElementById("flex2Reps").textContent = flex2Reps;
+    document.getElementById("flex3Reps").textContent = flex3Reps;
+
+    const interpretationEl = document.getElementById("movementInterpretation");
+    const detailsEl = document.getElementById("movementDetails");
+
+    if (liveStats.totalSamples === 0) {
+      interpretationEl.textContent = "Waiting for patient data...";
+      detailsEl.textContent = "No valid flex sensor samples were found for this session.";
+      return;
+    }
+
+    if (activeSensors > 0) {
+      interpretationEl.textContent =
+        `Patient is actively flexing ${activeSensors} sensor${activeSensors === 1 ? "" : "s"}.`;
+    } else {
+      interpretationEl.textContent =
+        "Patient is currently at or below baseline.";
+    }
+
+    detailsEl.textContent =
+      `Processed ${liveStats.totalSamples} samples across ${liveStats.totalBatches} batch${liveStats.totalBatches === 1 ? "" : "es"} from ${formatDateTime(liveStats.firstTime)} to ${formatDateTime(liveStats.lastTime)}. Reps are counted when a sensor rises above ${FLEX_BASELINE} and returns to ${FLEX_BASELINE} or below.`;
+  }
+
+  function resetExerciseSummary() {
+    document.getElementById("totalReps").textContent = "0";
+    document.getElementById("flex1Reps").textContent = "0";
+    document.getElementById("flex2Reps").textContent = "0";
+    document.getElementById("flex3Reps").textContent = "0";
+
+    document.getElementById("movementInterpretation").textContent =
+      "Waiting for patient data...";
+    document.getElementById("movementDetails").textContent =
+      "Start or load a session to calculate repetitions and movement activity.";
+
+    [1, 2, 3].forEach(function (sensorNumber) {
+      document.getElementById(`flex${sensorNumber}Current`).textContent = "--";
+      document.getElementById(`flex${sensorNumber}Movement`).textContent =
+        "No movement";
+      document.getElementById(`flex${sensorNumber}Movement`).className =
+        "movement-off";
+    });
+  }
+
+  function clearCharts() {
+    const canvas = document.getElementById("flexChart");
+
+    if (!canvas) {
+      debugWarn("clearCharts skipped: flexChart canvas missing");
+      return;
+    }
+
+    const ctx = canvas.getContext("2d");
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    debugLog("Canvas graph cleared");
+  }
+
+  function renderChartNow() {
+    debugLog("renderChartNow called", {
+      canvasExists: Boolean(document.getElementById("flexChart")),
+      visibleSamples: fullData.sampleTimes.length,
+      totalSamples: liveStats.totalSamples,
+      latest: liveStats.latest.slice(),
+      flex1Last5: fullData.flex1.slice(-5),
+      flex2Last5: fullData.flex2.slice(-5),
+      flex3Last5: fullData.flex3.slice(-5)
+    });
+
+    updateFlexChart();
+  }
+
+  function updateFlexChart() {
+    const canvas = document.getElementById("flexChart");
+
+    if (!canvas) {
+      debugError("Cannot draw graph: #flexChart canvas does not exist");
+      return;
+    }
+
+    const parent = canvas.parentElement;
+
+    if (!parent) {
+      debugError("Cannot draw graph: canvas has no parent element");
+      return;
+    }
+
+    const width = Math.max(parent.clientWidth, 320);
+    const height = 420;
+
+    canvas.width = width;
+    canvas.height = height;
+    canvas.style.width = "100%";
+    canvas.style.height = `${height}px`;
+
+    const ctx = canvas.getContext("2d");
+
+    if (!ctx) {
+      debugError("Cannot draw graph: could not get 2D canvas context");
+      return;
+    }
+
+    ctx.clearRect(0, 0, width, height);
+
+    const paddingLeft = 48;
+    const paddingRight = 16;
+    const paddingTop = 18;
+    const paddingBottom = 42;
+
+    const plotWidth = width - paddingLeft - paddingRight;
+    const plotHeight = height - paddingTop - paddingBottom;
+
+    const values = [
+      ...fullData.flex1,
+      ...fullData.flex2,
+      ...fullData.flex3,
+      FLEX_BASELINE
+    ].filter(Number.isFinite);
+
+    if (values.length === 0 || fullData.sampleIndexes.length === 0) {
+      debugWarn("Graph not drawn: no values or no sample indexes", {
+        valuesLength: values.length,
+        sampleIndexesLength: fullData.sampleIndexes.length
+      });
+
+      ctx.fillStyle = "#52616b";
+      ctx.font = "15px Arial";
+      ctx.fillText("Waiting for live flex sensor data...", paddingLeft, height / 2);
+      return;
+    }
+
+    const minY = 0;
+    const maxObserved = Math.max(...values);
+    const maxY = Math.max(20, Math.ceil(maxObserved / 10) * 10);
+
+    debugLog("Drawing graph", {
+      width,
+      height,
+      visibleSamples: fullData.sampleIndexes.length,
+      maxObserved,
+      maxY,
+      latest: liveStats.latest.slice()
+    });
+
+    function xForIndex(i) {
+      if (fullData.sampleIndexes.length <= 1) {
+        return paddingLeft;
+      }
+
+      return paddingLeft + (i / (fullData.sampleIndexes.length - 1)) * plotWidth;
+    }
+
+    function yForValue(value) {
+      return paddingTop + plotHeight - ((value - minY) / (maxY - minY)) * plotHeight;
+    }
+
+    ctx.strokeStyle = "#d8e2ea";
+    ctx.lineWidth = 1;
+
+    for (let i = 0; i <= 4; i += 1) {
+      const y = paddingTop + (i / 4) * plotHeight;
+      ctx.beginPath();
+      ctx.moveTo(paddingLeft, y);
+      ctx.lineTo(width - paddingRight, y);
+      ctx.stroke();
+
+      const labelValue = maxY - (i / 4) * maxY;
+      ctx.fillStyle = "#52616b";
+      ctx.font = "12px Arial";
+      ctx.fillText(labelValue.toFixed(0), 8, y + 4);
+    }
+
+    ctx.strokeStyle = "#1f2933";
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.moveTo(paddingLeft, paddingTop);
+    ctx.lineTo(paddingLeft, height - paddingBottom);
+    ctx.lineTo(width - paddingRight, height - paddingBottom);
+    ctx.stroke();
+
+    function drawLine(data, color, label, labelY) {
+      if (!data || data.length === 0) {
+        debugWarn(`Skipping ${label}: no data`);
+        return;
+      }
+
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+
+      let started = false;
+      let pointCount = 0;
+
+      for (let i = 0; i < data.length; i += 1) {
+        const value = data[i];
+
+        if (!Number.isFinite(value)) {
+          continue;
+        }
+
+        const x = xForIndex(i);
+        const y = yForValue(value);
+
+        if (!started) {
+          ctx.moveTo(x, y);
+          started = true;
+        } else {
+          ctx.lineTo(x, y);
+        }
+
+        pointCount += 1;
+      }
+
+      if (pointCount === 0) {
+        debugWarn(`Skipping ${label}: no finite points`);
+        return;
+      }
+
+      ctx.stroke();
+
+      ctx.fillStyle = color;
+      ctx.font = "13px Arial";
+      ctx.fillText(label, paddingLeft + 8, labelY);
+
+      debugLog(`Drew ${label}`, {
+        points: pointCount,
+        lastFive: data.slice(-5)
+      });
+    }
+
+    function drawBaseline() {
+      const y = yForValue(FLEX_BASELINE);
+
+      ctx.strokeStyle = "#666";
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([8, 6]);
+      ctx.beginPath();
+      ctx.moveTo(paddingLeft, y);
+      ctx.lineTo(width - paddingRight, y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      ctx.fillStyle = "#666";
+      ctx.font = "13px Arial";
+      ctx.fillText("Baseline 15", width - 110, y - 6);
+    }
+
+    drawBaseline();
+    drawLine(fullData.flex1, "#0079c1", "Flex 1", 22);
+    drawLine(fullData.flex2, "#00a3ad", "Flex 2", 40);
+    drawLine(fullData.flex3, "#2e8540", "Flex 3", 58);
+
+    const latestLabel = `Samples shown: ${fullData.sampleIndexes.length} / Total processed: ${liveStats.totalSamples}`;
+
+    ctx.fillStyle = "#52616b";
+    ctx.font = "13px Arial";
+    ctx.fillText(latestLabel, paddingLeft, height - 14);
+
+    ctx.fillStyle = "#1f2933";
+    ctx.font = "13px Arial";
+    ctx.fillText(
+      `Latest: ${liveStats.latest[0]?.toFixed?.(1) ?? "--"}, ${liveStats.latest[1]?.toFixed?.(1) ?? "--"}, ${liveStats.latest[2]?.toFixed?.(1) ?? "--"}`,
+      Math.max(paddingLeft, width - 270),
+      height - 14
+    );
+  }
+
+  window.onload = function () {
+    debugLog("window.onload fired");
+    debugLog("Startup checks", {
+      socketIoLoaded: typeof io !== "undefined",
+      canvasExists: Boolean(document.getElementById("flexChart")),
+      sessionInputExists: Boolean(document.getElementById("sessionIdInput")),
+      rawOutputExists: Boolean(document.getElementById("rawOutput")),
+      chartJsLoaded: typeof Chart !== "undefined"
+    });
+
+    clearCharts();
+    connectSocket();
+  };
+</script>
+</body>
+</html>

@@ -1,7 +1,10 @@
 #include <Wire.h>
+#include <MPU6050_light.h>
 
 #define SDA_PIN 8
 #define SCL_PIN 9
+
+MPU6050 mpu(Wire);
 
 void setup() {
   Serial.begin(115200);
@@ -9,29 +12,31 @@ void setup() {
 
   Wire.begin(SDA_PIN, SCL_PIN);
 
-  Serial.println("I2C scanner starting...");
+  byte status = mpu.begin();
+
+  if (status != 0) {
+    Serial.print("MPU6050 init failed. Status: ");
+    Serial.println(status);
+    return;
+  }
+
+  Serial.println("MPU6050 ready!");
+
+  Serial.println("Keep sensor still, calculating offsets...");
+  delay(1000);
+  mpu.calcOffsets(true, true);
+  Serial.println("Done.");
 }
 
 void loop() {
-  byte error, address;
-  int devicesFound = 0;
+  mpu.update();
 
-  for (address = 1; address < 127; address++) {
-    Wire.beginTransmission(address);
-    error = Wire.endTransmission();
+  Serial.print("Angle X: ");
+  Serial.print(mpu.getAngleX());
+  Serial.print(" | Angle Y: ");
+  Serial.print(mpu.getAngleY());
+  Serial.print(" | Angle Z: ");
+  Serial.println(mpu.getAngleZ());
 
-    if (error == 0) {
-      Serial.print("I2C device found at 0x");
-      if (address < 16) Serial.print("0");
-      Serial.println(address, HEX);
-      devicesFound++;
-    }
-  }
-
-  if (devicesFound == 0) {
-    Serial.println("No I2C devices found.");
-  }
-
-  Serial.println();
-  delay(2000);
+  delay(100);
 }
