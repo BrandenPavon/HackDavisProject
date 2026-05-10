@@ -603,6 +603,9 @@
   let flexChart = null;
 
   let currentSessionId = null;
+  let lastBatchIndexSeen = -1;
+  let liveBatches = [];
+
   const POLL_INTERVAL_MS = 100;
   const FLEX_BASELINE = 15;
   const MAX_CHART_POINTS = 400;
@@ -684,6 +687,11 @@
     return new Date(timestampMs);
   }
 
+  function resetLiveMemory() {
+    lastBatchIndexSeen = -1;
+    liveBatches = [];
+  }
+
   async function startExercise() {
     try {
       const response = await fetch("/start_exercise", {
@@ -705,6 +713,7 @@
       }
 
       currentSessionId = json.session_id;
+      resetLiveMemory();
 
       clearCharts();
       resetExerciseSummary();
@@ -755,6 +764,7 @@
 
       const stoppedSessionId = json.session_id;
       currentSessionId = null;
+      resetLiveMemory();
 
       document.getElementById("lastUpdated").textContent =
         new Date().toLocaleTimeString();
@@ -779,7 +789,9 @@
 
   async function pollActiveSessionData() {
     try {
-      const response = await fetch("/active-session-data");
+      const response = await fetch(
+        `/active-session-data?after=${lastBatchIndexSeen}`
+      );
       const json = await response.json();
 
       const statusEl = document.getElementById("sessionStatus");
@@ -788,33 +800,98 @@
       document.getElementById("lastUpdated").textContent =
         new Date().toLocaleTimeString();
 
-      if (!response.ok || !json.active || !json.session) {
+      if (!json.active || !json.session_id) {
         statusEl.textContent = "No active session";
         statusEl.className = "inactive";
         sessionEl.textContent = "None";
         currentSessionId = null;
+        resetLiveMemory();
         return;
       }
 
-      currentSessionId = json.session_id;
+      if (json.session_id !== currentSessionId) {
+        currentSessionId = json.session_id;
+        resetLiveMemory();
+
+        statusEl.textContent = "Active";
+        statusEl.className = "active";
+        sessionEl.textContent = currentSessionId;
+        document.getElementById("sessionIdInput").value = currentSessionId;
+
+        /*
+          Refetch from the start for the new active session.
+          This prevents mixing batches from an old session with a new one.
+        */
+        await fetchInitialActiveSessionData();
+        return;
+      }
 
       statusEl.textContent = "Active";
       statusEl.className = "active";
       sessionEl.textContent = currentSessionId;
       document.getElementById("sessionIdInput").value = currentSessionId;
 
-      document.getElementById("rawOutput").textContent =
-        JSON.stringify(json, null, 2);
+      if (typeof json.next_after === "number") {
+        lastBatchIndexSeen = json.next_after;
+      }
 
-      const batches = json.session.batches || [];
-      const parsed = parseExerciseData(batches);
+      if (Array.isArray(json.batches) && json.batches.length > 0) {
+        liveBatches.push(...json.batches);
+
+        const parsed = parseExerciseData(liveBatches);
+        const chartData = downsampleForChart(parsed);
+
+        updateFlexChart(chartData);
+        updateExerciseSummary(parsed);
+      }
+
+      document.getElementById("rawOutput").textContent =
+        JSON.stringify({
+          found: json.found,
+          active: json.active,
+          session_id: json.session_id,
+          local_batch_count: json.local_batch_count,
+          new_batch_count: json.new_batch_count,
+          next_after: json.next_after
+        }, null, 2);
+
+    } catch (error) {
+      console.error("Failed to poll active session data:", error);
+    }
+  }
+
+  async function fetchInitialActiveSessionData() {
+    try {
+      const response = await fetch("/active-session-data?after=-1");
+      const json = await response.json();
+
+      if (!response.ok || !json.active || !json.session_id) {
+        return;
+      }
+
+      currentSessionId = json.session_id;
+      lastBatchIndexSeen =
+        typeof json.next_after === "number" ? json.next_after : -1;
+      liveBatches = Array.isArray(json.batches) ? json.batches.slice() : [];
+
+      const parsed = parseExerciseData(liveBatches);
       const chartData = downsampleForChart(parsed);
 
       updateFlexChart(chartData);
       updateExerciseSummary(parsed);
 
+      document.getElementById("rawOutput").textContent =
+        JSON.stringify({
+          found: json.found,
+          active: json.active,
+          session_id: json.session_id,
+          local_batch_count: json.local_batch_count,
+          new_batch_count: json.new_batch_count,
+          next_after: json.next_after
+        }, null, 2);
+
     } catch (error) {
-      console.error("Failed to poll active session data:", error);
+      console.error("Failed to fetch initial active session data:", error);
     }
   }
 
@@ -827,6 +904,7 @@
     }
 
     currentSessionId = sessionId;
+    resetLiveMemory();
 
     document.getElementById("activeSessionId").textContent = sessionId;
     document.getElementById("sessionStatus").textContent = "Custom Session";

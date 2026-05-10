@@ -613,13 +613,23 @@ def post_flex_data():
 @app.get("/active-session-data")
 def get_active_session_data():
     """
-    Full dump of the current active session from memory only.
+    Incremental in-memory active session endpoint.
     No MongoDB read.
 
-    The lookup of current_active_session and its batches is O(1).
-    Returning the HTTP response is still O(n), because JSON serialization
-    must write every batch into the response body.
+    Client sends:
+        /active-session-data?after=123
+
+    Server returns only batches after that index.
+
+    This avoids sending the entire active session every few milliseconds.
     """
+
+    after_raw = request.args.get("after", "-1")
+
+    try:
+        after = int(after_raw)
+    except ValueError:
+        after = -1
 
     with state_lock:
         if not current_active_session:
@@ -628,16 +638,37 @@ def get_active_session_data():
                 "active": False,
                 "message": "No active session in memory",
                 "session_id": None,
+                "start": False,
+                "started_at": None,
+                "stopped_at": None,
                 "local_batch_count": 0,
-                "session": None
-            }), 404
+                "next_after": -1,
+                "batches": []
+            }), 200
+
+        batches = current_active_session.get("batches", [])
+        total_count = len(batches)
+
+        if after < -1:
+            after = -1
+
+        if after >= total_count:
+            new_batches = []
+        else:
+            new_batches = batches[after + 1:]
 
         return jsonify({
             "found": True,
             "active": True,
             "session_id": current_active_session_id,
-            "local_batch_count": len(current_active_session.get("batches", [])),
-            "session": current_active_session
+            "start": current_active_session.get("start"),
+            "started_at": current_active_session.get("started_at"),
+            "stopped_at": current_active_session.get("stopped_at"),
+            "saved_to_db": current_active_session.get("saved_to_db", False),
+            "local_batch_count": total_count,
+            "next_after": total_count - 1,
+            "new_batch_count": len(new_batches),
+            "batches": new_batches
         }), 200
 
 
