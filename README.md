@@ -1,3 +1,3 @@
+# Hack Davis Project 2026 
 
-
-ESP32 -> bluetooth -> mongodb -> Flask server
+Mendly project
