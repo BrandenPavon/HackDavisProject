@@ -87,7 +87,7 @@ export default function Exercises({ onStatusChange }: ExercisesProps) {
   const exerciseImages: { [key: string]: string } = {
     '1': 'https://images.unsplash.com/photo-1728894703338-f48301458fa2?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=800',
     '2': 'https://images.unsplash.com/photo-1627738641656-aebd944716cb?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=800',
-    '3': 'https://images.unsplash.com/photo-1734688680877-277057fbe97f?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=800',
+    '3': 'https://d2culxnxbccemt.cloudfront.net/bowl/content/uploads/2021/03/18124955/wrist-1.gif',
   };
 
   const activeExercise = exercises.find((ex) => ex.id === activeExerciseId);
