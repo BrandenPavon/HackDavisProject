@@ -38,5 +38,12 @@ void loop() {
   Serial.print(" | Angle Z: ");
   Serial.println(mpu.getAngleZ());
 
+  Serial.print(" | Gyro X: ");
+  Serial.print(mpu.getGyroX());
+  Serial.print(" | Gyro Y: ");
+  Serial.print(mpu.getGyroY());
+  Serial.print(" | Gyro Z: ");
+  Serial.print(mpu.getGyroZ());
+
   delay(100);
 }
