@@ -8,28 +8,24 @@ WiFiUDP udp;
 const char* udpHost = "192.168.137.154";
 const int udpPort = 5005;
 
-unsigned long batchStartMs = 0;
-unsigned long batchEndMs = 0;
-
 const char* ssid = "FOURSCOMP 6563";
 const char* password = "electric";
 
-const char* dataURL = "http://192.168.137.154:5000/flex-data";
 const char* pollStartURL = "http://192.168.137.154:5000/poll_start_exercise";
 
 String sessionID = "";
 
 const int flexPins[3] = {4, 5, 6};
 
-const unsigned long sampleIntervalMs = 50;    // 20 Hz
-const unsigned long pollIntervalMs = 2000;    // poll every 2 sec
-const int batchSize = 5;                      // 250 ms batch
+const unsigned long sampleIntervalMs = 25;
+const unsigned long pollIntervalMs = 500;
+const int batchSize = 4;
 
 unsigned long lastSampleMs = 0;
 unsigned long lastPollMs = 0;
+unsigned long lastReconnectAttemptMs = 0;
 
 String state = "idle";
-String lastState = "idle";
 
 const int rawMin = 1100;
 const int rawMax = 2650;
@@ -41,10 +37,16 @@ bool filterInitialized[3] = {false, false, false};
 
 float baselineRaw[3] = {0, 0, 0};
 bool calibrated = false;
+
 const int calibrationSamples = 20;
+int calibrationCount = 0;
+float calibrationSum[3] = {0, 0, 0};
 
 float flexBatch[batchSize][3];
 int batchCounter = 0;
+
+unsigned long batchStartMs = 0;
+unsigned long batchEndMs = 0;
 
 void setup() {
   Serial.begin(115200);
@@ -55,27 +57,34 @@ void setup() {
   WiFi.begin(ssid, password);
   Serial.print("Connecting to WiFi");
 
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
+  unsigned long startAttempt = millis();
+
+  while (WiFi.status() != WL_CONNECTED && millis() - startAttempt < 5000) {
+    delay(250);
     Serial.print(".");
   }
 
-  Serial.println("\nConnected!");
-  Serial.print("ESP32 IP: ");
-  Serial.println(WiFi.localIP());
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("\nConnected!");
+    Serial.print("ESP32 IP: ");
+    Serial.println(WiFi.localIP());
+  } else {
+    Serial.println("\nWiFi not connected yet. Continuing anyway.");
+  }
 }
 
 void loop() {
   unsigned long now = millis();
 
-  if (now - lastPollMs >= pollIntervalMs) {
+  maintainWiFi(now);
+
+  if (state != "running" && state != "calibrating" && now - lastPollMs >= pollIntervalMs) {
     lastPollMs = now;
     pollStartExercise();
   }
 
   if (now - lastSampleMs >= sampleIntervalMs) {
     lastSampleMs += sampleIntervalMs;
-
     sampleSensors();
   }
 }
@@ -95,24 +104,29 @@ void sampleSensors() {
 
     bendPercents[i] = calculateBendPercent(i);
   }
+
+  if (state == "calibrating") {
+    updateCalibration();
+    return;
+  }
+
   if (state == "running" && calibrated) {
-  if (batchCounter == 0) {
-    batchStartMs = millis();
-  }
+    if (batchCounter == 0) {
+      batchStartMs = millis();
+    }
 
-  for (int i = 0; i < 3; i++) {
-    flexBatch[batchCounter][i] = bendPercents[i];
-  }
+    for (int i = 0; i < 3; i++) {
+      flexBatch[batchCounter][i] = bendPercents[i];
+    }
 
-  batchCounter++;
+    batchCounter++;
 
-  if (batchCounter >= batchSize) {
-    batchEndMs = millis();
-    sendBatchUDP();
-    batchCounter = 0;
+    if (batchCounter >= batchSize) {
+      batchEndMs = millis();
+      sendBatchUDP();
+      batchCounter = 0;
+    }
   }
-}
- 
 }
 
 float calculateBendPercent(int sensorIndex) {
@@ -134,7 +148,6 @@ float calculateBendPercent(int sensorIndex) {
 
 void pollStartExercise() {
   if (WiFi.status() != WL_CONNECTED) {
-    reconnectWiFi();
     return;
   }
 
@@ -142,9 +155,8 @@ void pollStartExercise() {
 
   String url = String(pollStartURL) + "?session_id=session_001";
   http.begin(url);
-  http.setTimeout(500);
+  http.setTimeout(75);
 
-  unsigned long startMs = millis();
   int code = http.GET();
 
   if (code == 200) {
@@ -161,35 +173,24 @@ void pollStartExercise() {
       }
 
       handleExerciseState(start);
-    } else {
-      Serial.println("JSON parse failed");
     }
-  } else {
-    Serial.print("Poll failed. Code: ");
-    Serial.println(code);
   }
-
-  Serial.print("Poll took ms: ");
-  Serial.println(millis() - startMs);
 
   http.end();
 }
 
 void handleExerciseState(bool start) {
   if (start && sessionID != "") {
-    if (state != "running") {
-      Serial.println("Exercise started");
+    if (state == "idle") {
+      Serial.println("Exercise start received. Starting non-blocking calibration.");
 
-      state = "running";
       batchCounter = 0;
-
-      if (!calibrated) {
-        calibrateBaseline();
-      }
+      calibrated = false;
+      beginCalibration();
     }
   } else {
     if (state != "idle") {
-      Serial.println("Exercise stopped");
+      Serial.println("Exercise stopped.");
     }
 
     state = "idle";
@@ -198,50 +199,56 @@ void handleExerciseState(bool start) {
   }
 }
 
-void calibrateBaseline() {
-  Serial.println("Calibrating baseline. Keep sensors still...");
-
-  float sum[3] = {0, 0, 0};
-
-  for (int sample = 0; sample < calibrationSamples; sample++) {
-    for (int i = 0; i < 3; i++) {
-      sum[i] += analogRead(flexPins[i]);
-    }
-
-    delay(50);
-  }
+void beginCalibration() {
+  state = "calibrating";
+  calibrationCount = 0;
 
   for (int i = 0; i < 3; i++) {
-    baselineRaw[i] = sum[i] / calibrationSamples;
-    filteredRaw[i] = baselineRaw[i];
-    filterInitialized[i] = true;
+    calibrationSum[i] = 0;
+  }
+}
+
+void updateCalibration() {
+  for (int i = 0; i < 3; i++) {
+    calibrationSum[i] += filteredRaw[i];
   }
 
-  calibrated = true;
+  calibrationCount++;
 
-  Serial.print("Baseline calibrated: ");
-  Serial.print(baselineRaw[0]);
-  Serial.print(", ");
-  Serial.print(baselineRaw[1]);
-  Serial.print(", ");
-  Serial.println(baselineRaw[2]);
+  if (calibrationCount >= calibrationSamples) {
+    for (int i = 0; i < 3; i++) {
+      baselineRaw[i] = calibrationSum[i] / calibrationSamples;
+      filteredRaw[i] = baselineRaw[i];
+      filterInitialized[i] = true;
+    }
+
+    calibrated = true;
+    state = "running";
+    batchCounter = 0;
+
+    Serial.print("Baseline calibrated: ");
+    Serial.print(baselineRaw[0]);
+    Serial.print(", ");
+    Serial.print(baselineRaw[1]);
+    Serial.print(", ");
+    Serial.println(baselineRaw[2]);
+  }
 }
 
 void sendBatchUDP() {
   if (WiFi.status() != WL_CONNECTED) {
-    reconnectWiFi();
     return;
   }
 
-  if (sessionID == "") return;
+  if (sessionID == "") {
+    return;
+  }
 
   String json = buildJsonPayload();
 
   udp.beginPacket(udpHost, udpPort);
   udp.print(json);
   udp.endPacket();
-
-  Serial.println("UDP batch sent");
 }
 
 String buildJsonPayload() {
@@ -267,22 +274,18 @@ String buildJsonPayload() {
   return json;
 }
 
-void reconnectWiFi() {
-  Serial.println("WiFi disconnected. Reconnecting...");
+void maintainWiFi(unsigned long now) {
+  if (WiFi.status() == WL_CONNECTED) {
+    return;
+  }
 
+  if (now - lastReconnectAttemptMs < 3000) {
+    return;
+  }
+
+  lastReconnectAttemptMs = now;
+
+  Serial.println("WiFi disconnected. Reconnect attempt started.");
   WiFi.disconnect();
   WiFi.begin(ssid, password);
-
-  unsigned long startAttempt = millis();
-
-  while (WiFi.status() != WL_CONNECTED && millis() - startAttempt < 3000) {
-    delay(250);
-    Serial.print(".");
-  }
-
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("\nWiFi reconnected");
-  } else {
-    Serial.println("\nWiFi reconnect failed");
-  }
 }
