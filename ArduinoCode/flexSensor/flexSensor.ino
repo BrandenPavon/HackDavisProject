@@ -1,159 +1,56 @@
-#include <WiFi.h>
-#include <HTTPClient.h>
-#include <ArduinoJson.h>
+const int flexPin = 4;  // GPIO1
 
-const char* ssid = "FOURSCOMP 6563";
-const char* password = "electric";
+const unsigned long sampleIntervalMs = 50;  // 20 Hz
+unsigned long lastSampleMs = 0;
 
-// UPDATED endpoint
-const char* dataURL = "http://192.168.137.154:5000/flex-data";
-const char* pollStartURL = "http://192.168.137.154:5000/poll_start_exercise";
+// Slightly wider than theoretical range of ~1290 to ~2650
+const int rawMin = 1100;
+const int rawMax = 2600;
 
-const char* sessionID = "session_001";
+// Digital low-pass filter - Used exponential moving average
+// Lower alpha = smoother but slower
+// Higher alpha = faster but noisier
+const float alpha = 0.40;
 
-const int FLEX_PIN = 4;
-
-int flexMin = 0;
-int flexMax = 4095;
-
-String state = "idle";
-
-unsigned long lastCommandTime = 0;
-
-// Buffer for batching
-int buffer[5];
-int bufferIndex = 0;
+float filteredRaw = 0;
+bool filterInitialized = false;
 
 void setup() {
-  Serial.begin(9600);
-  delay(1000);
+  Serial.begin(115200);
 
-  analogReadResolution(12);
-  analogSetPinAttenuation(FLEX_PIN, ADC_11db);
-
-  WiFi.begin(ssid, password);
-  Serial.print("Connecting to WiFi");
-
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
-  }
-
-  Serial.println("\nConnected!");
-  Serial.print("ESP32 IP: ");
-  Serial.println(WiFi.localIP());
+  analogReadResolution(12);          // ADC raw range: 0 to 4095
+  analogSetAttenuation(ADC_11db);    // Allows reading up to about 3.3 V
 }
 
 void loop() {
-  int raw = analogRead(FLEX_PIN);
-  float voltage = raw * (3.3 / 4095.0);
+  unsigned long now = millis();
 
-  int bendPercent = map(raw, flexMin, flexMax, 0, 100);
-  bendPercent = constrain(bendPercent, 0, 100);
+  if (now - lastSampleMs >= sampleIntervalMs) {
+    lastSampleMs = now;
 
-  Serial.print("Raw: ");
-  Serial.print(raw);
-  Serial.print(" | Voltage: ");
-  Serial.print(voltage, 3);
-  Serial.print(" V | Bend: ");
-  Serial.print(bendPercent);
-  Serial.print("% | State: ");
-  Serial.println(state);
+    int raw = analogRead(flexPin);
 
-  // Poll Flask every 1 second
-  if (millis() - lastCommandTime >= 1000) {
-    pollStartExercise();
-    lastCommandTime = millis();
-  }
-
-  // Collect data only when running
-  if (state == "running") {
-    buffer[bufferIndex] = raw;
-    bufferIndex++;
-
-    // When buffer fills, send batch
-    if (bufferIndex >= 5) {
-      sendBatch();
-      bufferIndex = 0;
-    }
-  }
-
-  delay(100);
-}
-
-void pollStartExercise() {
-  if (WiFi.status() != WL_CONNECTED) return;
-
-  HTTPClient http;
-
-  String url = String(pollStartURL) + "?session_id=" + String(sessionID);
-  http.begin(url);
-
-  int code = http.GET();
-
-  Serial.print("Poll code: ");
-  Serial.println(code);
-
-  if (code == 200) {
-    String response = http.getString();
-
-    Serial.print("Poll response: ");
-    Serial.println(response);
-
-    DynamicJsonDocument doc(256);
-    DeserializationError error = deserializeJson(doc, response);
-
-    if (error) {
-      Serial.println("JSON parse failed");
-      http.end();
-      return;
-    }
-
-    bool start = doc["start"];
-
-    if (start) {
-      state = "running";
+    // Initialize filter on first reading
+    if (!filterInitialized) {
+      filteredRaw = raw;
+      filterInitialized = true;
     } else {
-      state = "idle";
+      filteredRaw = alpha * raw + (1.0 - alpha) * filteredRaw;
     }
+
+    int clampedRaw = constrain((int)filteredRaw, rawMin, rawMax);
+
+    // Inverted scale:
+    // lower raw value = more bend = higher percentage
+    float bendPercent = (rawMax - clampedRaw) * 100.0 / (rawMax - rawMin);
+
+    Serial.print("raw=");
+    Serial.print(raw);
+
+    Serial.print(", filtered=");
+    Serial.print(filteredRaw, 1);
+
+    Serial.print(", bendPercent=");
+    Serial.println(bendPercent, 1);
   }
-
-  http.end();
-}
-
-void sendBatch() {
-  if (WiFi.status() != WL_CONNECTED) return;
-
-  HTTPClient http;
-  http.begin(dataURL);
-  http.addHeader("Content-Type", "application/json");
-
-  String json = "{";
-  json += "\"session_id\":\"" + String(sessionID) + "\",";
-  json += "\"data\":[";
-
-  for (int i = 0; i < 5; i++) {
-    json += String(buffer[i]);
-    if (i < 4) json += ",";
-  }
-
-  json += "]}";
-
-  int code = http.POST(json);
-
-  Serial.print("POST code: ");
-  Serial.println(code);
-  Serial.println(http.getString());
-
-  http.end();
-}
-
-void calibrateSensor() {
-  Serial.println("Calibrating... keep sensor straight.");
-
-  flexMin = analogRead(FLEX_PIN);
-  delay(1000);
-
-  Serial.print("New flexMin: ");
-  Serial.println(flexMin);
 }
