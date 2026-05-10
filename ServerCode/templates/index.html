@@ -599,446 +599,719 @@
     </p>
   </main>
 
-  <script>
-    let flexChart = null;
+<script>
+  let flexChart = null;
 
-    let currentSessionId = null;
-    const POLL_INTERVAL_MS = 250;
-    const FLEX_BASELINE = 15;
+  let currentSessionId = null;
+  const POLL_INTERVAL_MS = 100;
+  const FLEX_BASELINE = 15;
+  const MAX_CHART_POINTS = 400;
 
-    document
-      .getElementById("sessionIdInput")
-      .addEventListener("keydown", function (event) {
-        if (event.key === "Enter") {
-          loadCustomSession();
-        }
-      });
-
-    async function startExercise() {
-      try {
-        const response = await fetch("/start_exercise", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json"
-          },
-          body: JSON.stringify({})
-        });
-
-        const json = await response.json();
-
-        document.getElementById("rawOutput").textContent =
-          JSON.stringify(json, null, 2);
-
-        if (!response.ok) {
-          alert(json.error || "Failed to start exercise.");
-          return;
-        }
-
-        currentSessionId = json.session_id;
-
-        document.getElementById("sessionStatus").textContent = "Active";
-        document.getElementById("sessionStatus").className = "active";
-        document.getElementById("activeSessionId").textContent = currentSessionId;
-        document.getElementById("sessionIdInput").value = currentSessionId;
-        document.getElementById("lastUpdated").textContent =
-          new Date().toLocaleTimeString();
-
-      } catch (error) {
-        console.error("Failed to start exercise:", error);
-        alert("Failed to start exercise.");
+  document
+    .getElementById("sessionIdInput")
+    .addEventListener("keydown", function (event) {
+      if (event.key === "Enter") {
+        loadCustomSession();
       }
+    });
+
+  function formatTime(date) {
+    if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
+      return "--";
     }
 
-    async function stopExercise() {
-      try {
-        const payload = {};
+    return date.toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit"
+    });
+  }
 
-        if (currentSessionId) {
-          payload.session_id = currentSessionId;
-        }
-
-        const response = await fetch("/stop_exercise", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json"
-          },
-          body: JSON.stringify(payload)
-        });
-
-        const json = await response.json();
-
-        document.getElementById("rawOutput").textContent =
-          JSON.stringify(json, null, 2);
-
-        if (!response.ok) {
-          alert(json.error || "Failed to stop exercise.");
-          return;
-        }
-
-        document.getElementById("sessionStatus").textContent = "Stopped";
-        document.getElementById("sessionStatus").className = "inactive";
-        document.getElementById("activeSessionId").textContent =
-          json.session_id || "None";
-
-        currentSessionId = null;
-
-        document.getElementById("lastUpdated").textContent =
-          new Date().toLocaleTimeString();
-
-      } catch (error) {
-        console.error("Failed to stop exercise:", error);
-        alert("Failed to stop exercise.");
-      }
+  function formatDateTime(date) {
+    if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
+      return "--";
     }
 
-    async function pollForever() {
-      await pollActiveSessionAndData();
+    return date.toLocaleString([], {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit"
+    });
+  }
 
-      setInterval(async () => {
-        await pollActiveSessionAndData();
-      }, POLL_INTERVAL_MS);
-    }
+  function getBatchStopTime(batch) {
+    const createdAt = batch.created_at ? new Date(batch.created_at) : null;
 
-    async function pollActiveSessionAndData() {
-      try {
-        const response = await fetch("/active-session");
-        const json = await response.json();
-
-        const statusEl = document.getElementById("sessionStatus");
-        const sessionEl = document.getElementById("activeSessionId");
-
-        if (!json.active || !json.session_id) {
-          statusEl.textContent = "No active session";
-          statusEl.className = "inactive";
-          sessionEl.textContent = "None";
-          currentSessionId = null;
-
-          document.getElementById("lastUpdated").textContent =
-            new Date().toLocaleTimeString();
-
-          return;
-        }
-
-        currentSessionId = json.session_id;
-
-        statusEl.textContent = "Active";
-        statusEl.className = "active";
-        sessionEl.textContent = currentSessionId;
-
-        document.getElementById("sessionIdInput").value = currentSessionId;
-
-        await loadExerciseData(currentSessionId, false);
-
-      } catch (error) {
-        console.error("Failed to poll active session:", error);
-      }
-    }
-
-    async function loadCustomSession() {
-      const sessionId = document.getElementById("sessionIdInput").value.trim();
-
-      if (!sessionId) {
-        alert("Please enter a session ID.");
-        return;
-      }
-
-      currentSessionId = sessionId;
-
-      document.getElementById("activeSessionId").textContent = sessionId;
-      document.getElementById("sessionStatus").textContent = "Custom Session";
-      document.getElementById("sessionStatus").className = "active";
-
-      await loadExerciseData(sessionId, true);
-    }
-
-    async function loadExerciseData(sessionId, showAlerts) {
-      const url = `/exercise-data?session_id=${encodeURIComponent(sessionId)}`;
-
-      try {
-        const response = await fetch(url);
-        const json = await response.json();
-
-        document.getElementById("rawOutput").textContent =
-          JSON.stringify(json, null, 2);
-
-        document.getElementById("lastUpdated").textContent =
-          new Date().toLocaleTimeString();
-
-        if (!response.ok || !json.found) {
-          if (showAlerts) {
-            alert(`No data found for session ID: ${sessionId}`);
-          }
-
-          clearCharts();
-          resetExerciseSummary();
-          return;
-        }
-
-        const parsed = parseExerciseData(json.batches);
-
-        updateFlexChart(parsed);
-        updateExerciseSummary(parsed);
-
-      } catch (error) {
-        console.error("Failed to load exercise data:", error);
-
-        if (showAlerts) {
-          alert("Failed to load exercise data.");
-        }
-      }
-    }
-
-    function parseExerciseData(batches) {
-      const labels = [];
-
-      const flex1 = [];
-      const flex2 = [];
-      const flex3 = [];
-
-      let sampleIndex = 0;
-
-      batches.forEach((batch) => {
-        const rows = batch.data || [];
-
-        rows.forEach((row) => {
-          if (!Array.isArray(row) || row.length < 3) {
-            return;
-          }
-
-          labels.push(sampleIndex);
-
-          flex1.push(Number(row[0]));
-          flex2.push(Number(row[1]));
-          flex3.push(Number(row[2]));
-
-          sampleIndex += 1;
-        });
-      });
-
-      return {
-        labels,
-        flex1,
-        flex2,
-        flex3
-      };
-    }
-
-    function countReps(sensorValues) {
-      let reps = 0;
-      let aboveBaseline = false;
-
-      sensorValues.forEach((value) => {
-        if (!Number.isFinite(value)) {
-          return;
-        }
-
-        if (value > FLEX_BASELINE && !aboveBaseline) {
-          aboveBaseline = true;
-        }
-
-        if (value <= FLEX_BASELINE && aboveBaseline) {
-          reps += 1;
-          aboveBaseline = false;
-        }
-      });
-
-      return reps;
-    }
-
-    function getLatestValue(values) {
-      if (!values || values.length === 0) {
-        return null;
-      }
-
-      for (let i = values.length - 1; i >= 0; i -= 1) {
-        if (Number.isFinite(values[i])) {
-          return values[i];
-        }
-      }
-
+    if (!createdAt || Number.isNaN(createdAt.getTime())) {
       return null;
     }
 
-    function updateSensorMovement(sensorNumber, latestValue) {
-      const currentEl = document.getElementById(`flex${sensorNumber}Current`);
-      const movementEl = document.getElementById(`flex${sensorNumber}Movement`);
+    return createdAt;
+  }
 
-      if (latestValue === null) {
-        currentEl.textContent = "--";
-        movementEl.textContent = "No data";
-        movementEl.className = "movement-off";
-        return false;
-      }
+  function getBatchStartTime(batch) {
+    const stopTime = getBatchStopTime(batch);
 
-      const isMoving = latestValue > FLEX_BASELINE;
-
-      currentEl.textContent = latestValue;
-      movementEl.textContent = isMoving ? "Flexing" : "At baseline";
-      movementEl.className = isMoving ? "movement-on" : "movement-off";
-
-      return isMoving;
+    if (!stopTime) {
+      return null;
     }
 
-    function updateExerciseSummary(data) {
-      const flex1Reps = countReps(data.flex1);
-      const flex2Reps = countReps(data.flex2);
-      const flex3Reps = countReps(data.flex3);
-      const totalReps = flex1Reps + flex2Reps + flex3Reps;
+    const durationSeconds = Number(batch.batch_duration_seconds || 0);
 
-      const latestFlex1 = getLatestValue(data.flex1);
-      const latestFlex2 = getLatestValue(data.flex2);
-      const latestFlex3 = getLatestValue(data.flex3);
+    return new Date(stopTime.getTime() - durationSeconds * 1000);
+  }
 
-      const flex1Moving = updateSensorMovement(1, latestFlex1);
-      const flex2Moving = updateSensorMovement(2, latestFlex2);
-      const flex3Moving = updateSensorMovement(3, latestFlex3);
-      const activeSensors = [flex1Moving, flex2Moving, flex3Moving].filter(Boolean).length;
+  function getSampleTimestamp(batch, rowIndex, totalRows) {
+    const startTime = getBatchStartTime(batch);
+    const stopTime = getBatchStopTime(batch);
 
-      document.getElementById("totalReps").textContent = totalReps;
-      document.getElementById("flex1Reps").textContent = flex1Reps;
-      document.getElementById("flex2Reps").textContent = flex2Reps;
-      document.getElementById("flex3Reps").textContent = flex3Reps;
+    if (!startTime || !stopTime) {
+      return null;
+    }
 
-      const interpretationEl = document.getElementById("movementInterpretation");
-      const detailsEl = document.getElementById("movementDetails");
+    if (!totalRows || totalRows <= 1) {
+      return stopTime;
+    }
 
-      if (data.labels.length === 0) {
-        interpretationEl.textContent = "Waiting for patient data...";
-        detailsEl.textContent = "No valid flex sensor samples were found for this session.";
+    const progress = rowIndex / (totalRows - 1);
+    const timestampMs =
+      startTime.getTime() +
+      progress * (stopTime.getTime() - startTime.getTime());
+
+    return new Date(timestampMs);
+  }
+
+  async function startExercise() {
+    try {
+      const response = await fetch("/start_exercise", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({})
+      });
+
+      const json = await response.json();
+
+      document.getElementById("rawOutput").textContent =
+        JSON.stringify(json, null, 2);
+
+      if (!response.ok) {
+        alert(json.error || "Failed to start exercise.");
         return;
       }
 
-      if (activeSensors > 0) {
-        interpretationEl.textContent = `Patient is actively flexing ${activeSensors} sensor${activeSensors === 1 ? "" : "s"}.`;
-      } else {
-        interpretationEl.textContent = "Patient is currently at or below baseline.";
+      currentSessionId = json.session_id;
+
+      clearCharts();
+      resetExerciseSummary();
+
+      document.getElementById("sessionStatus").textContent = "Active";
+      document.getElementById("sessionStatus").className = "active";
+      document.getElementById("activeSessionId").textContent = currentSessionId;
+      document.getElementById("sessionIdInput").value = currentSessionId;
+      document.getElementById("lastUpdated").textContent =
+        new Date().toLocaleTimeString();
+
+    } catch (error) {
+      console.error("Failed to start exercise:", error);
+      alert("Failed to start exercise.");
+    }
+  }
+
+  async function stopExercise() {
+    try {
+      const payload = {};
+
+      if (currentSessionId) {
+        payload.session_id = currentSessionId;
       }
 
-      detailsEl.textContent = `Processed ${data.labels.length} samples. Reps are counted when a sensor rises above ${FLEX_BASELINE} and returns to ${FLEX_BASELINE} or below.`;
-    }
-
-    function resetExerciseSummary() {
-      document.getElementById("totalReps").textContent = "0";
-      document.getElementById("flex1Reps").textContent = "0";
-      document.getElementById("flex2Reps").textContent = "0";
-      document.getElementById("flex3Reps").textContent = "0";
-
-      document.getElementById("movementInterpretation").textContent = "Waiting for patient data...";
-      document.getElementById("movementDetails").textContent =
-        "Start or load a session to calculate repetitions and movement activity.";
-
-      [1, 2, 3].forEach((sensorNumber) => {
-        document.getElementById(`flex${sensorNumber}Current`).textContent = "--";
-        document.getElementById(`flex${sensorNumber}Movement`).textContent = "No movement";
-        document.getElementById(`flex${sensorNumber}Movement`).className = "movement-off";
+      const response = await fetch("/stop_exercise", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(payload)
       });
+
+      const json = await response.json();
+
+      document.getElementById("rawOutput").textContent =
+        JSON.stringify(json, null, 2);
+
+      if (!response.ok) {
+        alert(json.error || "Failed to stop exercise.");
+        return;
+      }
+
+      document.getElementById("sessionStatus").textContent = "Stopped";
+      document.getElementById("sessionStatus").className = "inactive";
+      document.getElementById("activeSessionId").textContent =
+        json.session_id || "None";
+
+      const stoppedSessionId = json.session_id;
+      currentSessionId = null;
+
+      document.getElementById("lastUpdated").textContent =
+        new Date().toLocaleTimeString();
+
+      if (stoppedSessionId) {
+        await loadExerciseDataFromDatabase(stoppedSessionId, false);
+      }
+
+    } catch (error) {
+      console.error("Failed to stop exercise:", error);
+      alert("Failed to stop exercise.");
+    }
+  }
+
+  async function pollForever() {
+    await pollActiveSessionData();
+
+    setInterval(async () => {
+      await pollActiveSessionData();
+    }, POLL_INTERVAL_MS);
+  }
+
+  async function pollActiveSessionData() {
+    try {
+      const response = await fetch("/active-session-data");
+      const json = await response.json();
+
+      const statusEl = document.getElementById("sessionStatus");
+      const sessionEl = document.getElementById("activeSessionId");
+
+      document.getElementById("lastUpdated").textContent =
+        new Date().toLocaleTimeString();
+
+      if (!response.ok || !json.active || !json.session) {
+        statusEl.textContent = "No active session";
+        statusEl.className = "inactive";
+        sessionEl.textContent = "None";
+        currentSessionId = null;
+        return;
+      }
+
+      currentSessionId = json.session_id;
+
+      statusEl.textContent = "Active";
+      statusEl.className = "active";
+      sessionEl.textContent = currentSessionId;
+      document.getElementById("sessionIdInput").value = currentSessionId;
+
+      document.getElementById("rawOutput").textContent =
+        JSON.stringify(json, null, 2);
+
+      const batches = json.session.batches || [];
+      const parsed = parseExerciseData(batches);
+      const chartData = downsampleForChart(parsed);
+
+      updateFlexChart(chartData);
+      updateExerciseSummary(parsed);
+
+    } catch (error) {
+      console.error("Failed to poll active session data:", error);
+    }
+  }
+
+  async function loadCustomSession() {
+    const sessionId = document.getElementById("sessionIdInput").value.trim();
+
+    if (!sessionId) {
+      alert("Please enter a session ID.");
+      return;
     }
 
-    function clearCharts() {
-      if (flexChart) {
-        flexChart.destroy();
-        flexChart = null;
+    currentSessionId = sessionId;
+
+    document.getElementById("activeSessionId").textContent = sessionId;
+    document.getElementById("sessionStatus").textContent = "Custom Session";
+    document.getElementById("sessionStatus").className = "neutral";
+
+    await loadExerciseDataFromDatabase(sessionId, true);
+  }
+
+  async function loadExerciseDataFromDatabase(sessionId, showAlerts) {
+    const url = `/exercise-data?session_id=${encodeURIComponent(sessionId)}`;
+
+    try {
+      const response = await fetch(url);
+      const json = await response.json();
+
+      document.getElementById("rawOutput").textContent =
+        JSON.stringify(json, null, 2);
+
+      document.getElementById("lastUpdated").textContent =
+        new Date().toLocaleTimeString();
+
+      if (!response.ok || !json.found) {
+        if (showAlerts) {
+          alert(`No database data found for session ID: ${sessionId}`);
+        }
+
+        clearCharts();
+        resetExerciseSummary();
+        return;
+      }
+
+      const parsed = parseExerciseData(json.batches || []);
+      const chartData = downsampleForChart(parsed);
+
+      updateFlexChart(chartData);
+      updateExerciseSummary(parsed);
+
+    } catch (error) {
+      console.error("Failed to load exercise data from database:", error);
+
+      if (showAlerts) {
+        alert("Failed to load exercise data.");
+      }
+    }
+  }
+
+  function parseExerciseData(batches) {
+    const labels = [];
+    const sampleTimes = [];
+    const batchRanges = [];
+
+    const flex1 = [];
+    const flex2 = [];
+    const flex3 = [];
+
+    batches.forEach((batch, batchIndex) => {
+      const rows = batch.data || [];
+
+      const batchStart = getBatchStartTime(batch);
+      const batchStop = getBatchStopTime(batch);
+
+      batchRanges.push({
+        batchIndex,
+        start: batchStart,
+        stop: batchStop,
+        label: `${formatTime(batchStart)} - ${formatTime(batchStop)}`,
+        sampleCount: rows.length
+      });
+
+      rows.forEach((row, rowIndex) => {
+        if (!Array.isArray(row) || row.length < 3) {
+          return;
+        }
+
+        const sampleTime = getSampleTimestamp(batch, rowIndex, rows.length);
+
+        labels.push(formatTime(sampleTime));
+        sampleTimes.push(sampleTime);
+
+        flex1.push(Number(row[0]));
+        flex2.push(Number(row[1]));
+        flex3.push(Number(row[2]));
+      });
+    });
+
+    return {
+      labels,
+      sampleTimes,
+      batchRanges,
+      flex1,
+      flex2,
+      flex3
+    };
+  }
+
+  function downsampleForChart(data, maxPoints = MAX_CHART_POINTS) {
+    const totalPoints = data.labels.length;
+
+    if (totalPoints <= maxPoints) {
+      return data;
+    }
+
+    const bucketSize = Math.ceil(totalPoints / maxPoints);
+
+    const labels = [];
+    const sampleTimes = [];
+    const flex1 = [];
+    const flex2 = [];
+    const flex3 = [];
+
+    for (let i = 0; i < totalPoints; i += bucketSize) {
+      const end = Math.min(i + bucketSize, totalPoints);
+
+      let sum1 = 0;
+      let sum2 = 0;
+      let sum3 = 0;
+      let count1 = 0;
+      let count2 = 0;
+      let count3 = 0;
+
+      for (let j = i; j < end; j += 1) {
+        if (Number.isFinite(data.flex1[j])) {
+          sum1 += data.flex1[j];
+          count1 += 1;
+        }
+
+        if (Number.isFinite(data.flex2[j])) {
+          sum2 += data.flex2[j];
+          count2 += 1;
+        }
+
+        if (Number.isFinite(data.flex3[j])) {
+          sum3 += data.flex3[j];
+          count3 += 1;
+        }
+      }
+
+      const middleIndex = Math.floor((i + end - 1) / 2);
+
+      labels.push(data.labels[middleIndex]);
+      sampleTimes.push(data.sampleTimes[middleIndex]);
+
+      flex1.push(count1 ? sum1 / count1 : null);
+      flex2.push(count2 ? sum2 / count2 : null);
+      flex3.push(count3 ? sum3 / count3 : null);
+    }
+
+    return {
+      labels,
+      sampleTimes,
+      batchRanges: data.batchRanges,
+      flex1,
+      flex2,
+      flex3
+    };
+  }
+
+  function countReps(sensorValues) {
+    let reps = 0;
+    let aboveBaseline = false;
+
+    sensorValues.forEach((value) => {
+      if (!Number.isFinite(value)) {
+        return;
+      }
+
+      if (value > FLEX_BASELINE && !aboveBaseline) {
+        aboveBaseline = true;
+      }
+
+      if (value <= FLEX_BASELINE && aboveBaseline) {
+        reps += 1;
+        aboveBaseline = false;
+      }
+    });
+
+    return reps;
+  }
+
+  function getLatestValue(values) {
+    if (!values || values.length === 0) {
+      return null;
+    }
+
+    for (let i = values.length - 1; i >= 0; i -= 1) {
+      if (Number.isFinite(values[i])) {
+        return values[i];
       }
     }
 
-    function updateFlexChart(data) {
-      const ctx = document.getElementById("flexChart");
+    return null;
+  }
 
-      if (!flexChart) {
-        flexChart = new Chart(ctx, {
-          type: "line",
-          data: {
-            labels: data.labels,
-            datasets: [
-              {
-                label: "Flex Sensor 1",
-                data: data.flex1,
-                borderWidth: 2,
-                tension: 0.2
-              },
-              {
-                label: "Flex Sensor 2",
-                data: data.flex2,
-                borderWidth: 2,
-                tension: 0.2
-              },
-              {
-                label: "Flex Sensor 3",
-                data: data.flex3,
-                borderWidth: 2,
-                tension: 0.2
-              },
-              {
-                label: "Baseline 15",
-                data: data.labels.map(() => FLEX_BASELINE),
-                borderWidth: 2,
-                borderDash: [8, 6],
-                pointRadius: 0,
-                tension: 0
-              }
-            ]
-          },
-          options: {
-            responsive: true,
-            animation: false,
-            interaction: {
-              mode: "index",
-              intersect: false
+  function updateSensorMovement(sensorNumber, latestValue) {
+    const currentEl = document.getElementById(`flex${sensorNumber}Current`);
+    const movementEl = document.getElementById(`flex${sensorNumber}Movement`);
+
+    if (latestValue === null) {
+      currentEl.textContent = "--";
+      movementEl.textContent = "No data";
+      movementEl.className = "movement-off";
+      return false;
+    }
+
+    const isMoving = latestValue > FLEX_BASELINE;
+
+    currentEl.textContent = latestValue.toFixed(1);
+    movementEl.textContent = isMoving ? "Flexing" : "At baseline";
+    movementEl.className = isMoving ? "movement-on" : "movement-off";
+
+    return isMoving;
+  }
+
+  function updateExerciseSummary(data) {
+    const flex1Reps = countReps(data.flex1);
+    const flex2Reps = countReps(data.flex2);
+    const flex3Reps = countReps(data.flex3);
+    const totalReps = flex1Reps + flex2Reps + flex3Reps;
+
+    const latestFlex1 = getLatestValue(data.flex1);
+    const latestFlex2 = getLatestValue(data.flex2);
+    const latestFlex3 = getLatestValue(data.flex3);
+
+    const flex1Moving = updateSensorMovement(1, latestFlex1);
+    const flex2Moving = updateSensorMovement(2, latestFlex2);
+    const flex3Moving = updateSensorMovement(3, latestFlex3);
+    const activeSensors = [flex1Moving, flex2Moving, flex3Moving].filter(Boolean).length;
+
+    document.getElementById("totalReps").textContent = totalReps;
+    document.getElementById("flex1Reps").textContent = flex1Reps;
+    document.getElementById("flex2Reps").textContent = flex2Reps;
+    document.getElementById("flex3Reps").textContent = flex3Reps;
+
+    const interpretationEl = document.getElementById("movementInterpretation");
+    const detailsEl = document.getElementById("movementDetails");
+
+    if (data.labels.length === 0) {
+      interpretationEl.textContent = "Waiting for patient data...";
+      detailsEl.textContent = "No valid flex sensor samples were found for this session.";
+      return;
+    }
+
+    const firstTime = data.sampleTimes[0];
+    const lastTime = data.sampleTimes[data.sampleTimes.length - 1];
+
+    if (activeSensors > 0) {
+      interpretationEl.textContent =
+        `Patient is actively flexing ${activeSensors} sensor${activeSensors === 1 ? "" : "s"}.`;
+    } else {
+      interpretationEl.textContent =
+        "Patient is currently at or below baseline.";
+    }
+
+    detailsEl.textContent =
+      `Processed ${data.labels.length} samples across ${data.batchRanges.length} batch${data.batchRanges.length === 1 ? "" : "es"} from ${formatDateTime(firstTime)} to ${formatDateTime(lastTime)}. Reps are counted when a sensor rises above ${FLEX_BASELINE} and returns to ${FLEX_BASELINE} or below.`;
+  }
+
+  function resetExerciseSummary() {
+    document.getElementById("totalReps").textContent = "0";
+    document.getElementById("flex1Reps").textContent = "0";
+    document.getElementById("flex2Reps").textContent = "0";
+    document.getElementById("flex3Reps").textContent = "0";
+
+    document.getElementById("movementInterpretation").textContent =
+      "Waiting for patient data...";
+    document.getElementById("movementDetails").textContent =
+      "Start or load a session to calculate repetitions and movement activity.";
+
+    [1, 2, 3].forEach((sensorNumber) => {
+      document.getElementById(`flex${sensorNumber}Current`).textContent = "--";
+      document.getElementById(`flex${sensorNumber}Movement`).textContent =
+        "No movement";
+      document.getElementById(`flex${sensorNumber}Movement`).className =
+        "movement-off";
+    });
+  }
+
+  function clearCharts() {
+    if (flexChart) {
+      flexChart.destroy();
+      flexChart = null;
+    }
+  }
+
+  function updateFlexChart(data) {
+    const ctx = document.getElementById("flexChart");
+
+    if (!flexChart) {
+      flexChart = new Chart(ctx, {
+        type: "line",
+        data: {
+          labels: data.labels,
+          datasets: [
+            {
+              label: "Flex Sensor 1",
+              data: data.flex1,
+              borderWidth: 2,
+              tension: 0.2,
+              pointRadius: 0
             },
-            plugins: {
-              legend: {
-                labels: {
-                  usePointStyle: true
-                }
-              },
-              tooltip: {
-                callbacks: {
-                  afterBody: function (items) {
-                    if (!items || items.length === 0) {
-                      return "";
+            {
+              label: "Flex Sensor 2",
+              data: data.flex2,
+              borderWidth: 2,
+              tension: 0.2,
+              pointRadius: 0
+            },
+            {
+              label: "Flex Sensor 3",
+              data: data.flex3,
+              borderWidth: 2,
+              tension: 0.2,
+              pointRadius: 0
+            },
+            {
+              label: "Baseline 15",
+              data: data.labels.map(() => FLEX_BASELINE),
+              borderWidth: 2,
+              borderDash: [8, 6],
+              pointRadius: 0,
+              tension: 0
+            }
+          ]
+        },
+        options: {
+          responsive: true,
+          animation: false,
+          interaction: {
+            mode: "index",
+            intersect: false
+          },
+          elements: {
+            point: {
+              radius: 0
+            }
+          },
+          plugins: {
+            legend: {
+              labels: {
+                usePointStyle: true
+              }
+            },
+            tooltip: {
+              callbacks: {
+                title: function (items) {
+                  if (!items || items.length === 0) {
+                    return "";
+                  }
+
+                  const index = items[0].dataIndex;
+                  const sampleTime = data.sampleTimes[index];
+
+                  return `Sample time: ${formatDateTime(sampleTime)}`;
+                },
+                afterBody: function (items) {
+                  if (!items || items.length === 0) {
+                    return "";
+                  }
+
+                  const index = items[0].dataIndex;
+                  const value = items[0].parsed.y;
+
+                  const batch = data.batchRanges.find((range) => {
+                    const sampleTime = data.sampleTimes[index];
+
+                    if (!sampleTime || !range.start || !range.stop) {
+                      return false;
                     }
 
-                    const value = items[0].parsed.y;
-                    return value > FLEX_BASELINE ? "Above baseline: flexing" : "At/below baseline";
+                    return (
+                      sampleTime.getTime() >= range.start.getTime() &&
+                      sampleTime.getTime() <= range.stop.getTime()
+                    );
+                  });
+
+                  const movementText =
+                    value > FLEX_BASELINE
+                      ? "Above baseline: flexing"
+                      : "At/below baseline";
+
+                  if (!batch) {
+                    return movementText;
                   }
-                }
-              }
-            },
-            scales: {
-              x: {
-                title: {
-                  display: true,
-                  text: "Sample Index"
-                },
-                grid: {
-                  color: "rgba(216, 226, 234, 0.65)"
-                }
-              },
-              y: {
-                title: {
-                  display: true,
-                  text: "Flex Value"
-                },
-                grid: {
-                  color: "rgba(216, 226, 234, 0.85)"
+
+                  return [
+                    movementText,
+                    `Batch ${batch.batchIndex + 1}: ${batch.label}`,
+                    `Batch samples: ${batch.sampleCount}`
+                  ];
                 }
               }
             }
+          },
+          scales: {
+            x: {
+              title: {
+                display: true,
+                text: "Timestamp"
+              },
+              ticks: {
+                maxRotation: 45,
+                minRotation: 0,
+                autoSkip: true,
+                maxTicksLimit: 12
+              },
+              grid: {
+                color: "rgba(216, 226, 234, 0.65)"
+              }
+            },
+            y: {
+              title: {
+                display: true,
+                text: "Flex Value"
+              },
+              suggestedMin: 0,
+              suggestedMax: 100,
+              grid: {
+                color: "rgba(216, 226, 234, 0.85)"
+              }
+            }
           }
-        });
-      } else {
-        flexChart.data.labels = data.labels;
-        flexChart.data.datasets[0].data = data.flex1;
-        flexChart.data.datasets[1].data = data.flex2;
-        flexChart.data.datasets[2].data = data.flex3;
-        flexChart.data.datasets[3].data = data.labels.map(() => FLEX_BASELINE);
-        flexChart.update();
-      }
-    }
+        }
+      });
+    } else {
+      flexChart.data.labels = data.labels;
+      flexChart.data.datasets[0].data = data.flex1;
+      flexChart.data.datasets[1].data = data.flex2;
+      flexChart.data.datasets[2].data = data.flex3;
+      flexChart.data.datasets[3].data = data.labels.map(() => FLEX_BASELINE);
 
-    window.onload = function () {
-      pollForever();
-    };
-  </script>
+      flexChart.options.plugins.tooltip.callbacks.title = function (items) {
+        if (!items || items.length === 0) {
+          return "";
+        }
+
+        const index = items[0].dataIndex;
+        const sampleTime = data.sampleTimes[index];
+
+        return `Sample time: ${formatDateTime(sampleTime)}`;
+      };
+
+      flexChart.options.plugins.tooltip.callbacks.afterBody = function (items) {
+        if (!items || items.length === 0) {
+          return "";
+        }
+
+        const index = items[0].dataIndex;
+        const value = items[0].parsed.y;
+
+        const batch = data.batchRanges.find((range) => {
+          const sampleTime = data.sampleTimes[index];
+
+          if (!sampleTime || !range.start || !range.stop) {
+            return false;
+          }
+
+          return (
+            sampleTime.getTime() >= range.start.getTime() &&
+            sampleTime.getTime() <= range.stop.getTime()
+          );
+        });
+
+        const movementText =
+          value > FLEX_BASELINE
+            ? "Above baseline: flexing"
+            : "At/below baseline";
+
+        if (!batch) {
+          return movementText;
+        }
+
+        return [
+          movementText,
+          `Batch ${batch.batchIndex + 1}: ${batch.label}`,
+          `Batch samples: ${batch.sampleCount}`
+        ];
+      };
+
+      flexChart.update("none");
+    }
+  }
+
+  window.onload = function () {
+    pollForever();
+  };
+</script>
 </body>
 </html>
