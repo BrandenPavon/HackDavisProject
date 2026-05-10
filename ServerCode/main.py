@@ -8,12 +8,23 @@ from datetime import datetime, timezone
 
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request, render_template
+from flask_socketio import SocketIO, emit
 from pymongo import MongoClient
 from pymongo.errors import PyMongoError
 
 
 load_dotenv()
+
 app = Flask(__name__)
+app.config["SECRET_KEY"] = os.getenv("SECRET_KEY", "dev-secret-key")
+
+socketio = SocketIO(
+    app,
+    cors_allowed_origins="*",
+    async_mode="threading",
+    logger=True,
+    engineio_logger=True
+)
 
 mongo_uri = os.getenv(
     "MONGO_URI",
@@ -34,7 +45,6 @@ exercise_states = {
     "sessions": {}
 }
 
-# O(1) pointer to the current active session in memory.
 current_active_session = None
 current_active_session_id = None
 
@@ -163,11 +173,6 @@ def stop_session(session_id=None):
 
 
 def save_session_batches_to_database(session_id):
-    """
-    Save all locally buffered batches for a stopped session to MongoDB.
-    This is called after /stop_exercise.
-    """
-
     with state_lock:
         session_state = exercise_states["sessions"].get(session_id)
 
@@ -221,23 +226,61 @@ def save_session_batches_to_database(session_id):
     }
 
 
-def buffer_flex_batch(body):
-    """
-    Stores incoming flex sensor batch in local memory only.
+def build_active_session_payload():
+    session = get_active_session_state()
 
-    Expected ESP32 UDP JSON format:
+    if not session:
+        return {
+            "active": False,
+            "session_id": None,
+            "local_batch_count": 0
+        }
 
-    {
-        "session_id": "session_abc123",
-        "batch_start_ms": 12345,
-        "batch_end_ms": 12595,
-        "data": [
-            [12.3, 45.6, 78.9],
-            [12.4, 45.7, 79.0]
-        ]
+    return {
+        "active": True,
+        "session_id": session["session_id"],
+        "start": session["start"],
+        "started_at": session["started_at"],
+        "stopped_at": session["stopped_at"],
+        "local_batch_count": session["local_batch_count"]
     }
-    """
 
+
+def emit_active_session_snapshot():
+    session = get_active_session_state()
+
+    if not session:
+        emit("active_session_state", {
+            "active": False,
+            "session_id": None,
+            "local_batch_count": 0
+        })
+        return
+
+    emit("active_session_state", {
+        "active": True,
+        "session_id": session["session_id"],
+        "start": session["start"],
+        "started_at": session["started_at"],
+        "stopped_at": session["stopped_at"],
+        "local_batch_count": session["local_batch_count"]
+    })
+
+    with state_lock:
+        recent_batches = (
+            current_active_session.get("batches", [])[-20:]
+            if current_active_session
+            else []
+        )
+
+    emit("active_session_snapshot", {
+        "session_id": session["session_id"],
+        "batches": recent_batches,
+        "local_batch_count": session["local_batch_count"]
+    })
+
+
+def buffer_flex_batch(body):
     if not body:
         return None, ("Missing JSON body", 400)
 
@@ -270,9 +313,6 @@ def buffer_flex_batch(body):
     if isinstance(batch_start_ms, (int, float)) and isinstance(batch_end_ms, (int, float)):
         batch_duration_seconds = max(0, batch_end_ms - batch_start_ms) / 1000.0
 
-    # Store as ISO string so jsonify can dump the active session directly.
-    received_at = utc_now_iso()
-
     batch_document = {
         "session_id": session_id,
         "sensor_type": "flex",
@@ -280,7 +320,7 @@ def buffer_flex_batch(body):
         "batch_end_ms": batch_end_ms,
         "batch_duration_seconds": batch_duration_seconds,
         "data": sensor_data,
-        "created_at": received_at
+        "created_at": utc_now_iso()
     }
 
     with state_lock:
@@ -294,8 +334,13 @@ def buffer_flex_batch(body):
             return None, ("Session is not running", 409)
 
         current_active_session.setdefault("batches", []).append(batch_document)
-
         local_batch_count = len(current_active_session["batches"])
+
+    socketio.emit("flex_batch", {
+        "session_id": session_id,
+        "local_batch_count": local_batch_count,
+        "batch": batch_document
+    })
 
     return {
         "message": "Flex sensor batch buffered locally",
@@ -310,10 +355,10 @@ def udp_flex_data_listener():
     try:
         sock.bind((UDP_HOST, UDP_PORT))
     except OSError as e:
-        print(f"UDP bind failed on {UDP_HOST}:{UDP_PORT}: {e}")
+        print(f"UDP bind failed on {UDP_HOST}:{UDP_PORT}: {e}", flush=True)
         return
 
-    print(f"UDP flex-data listener running on {UDP_HOST}:{UDP_PORT}")
+    print(f"UDP flex-data listener running on {UDP_HOST}:{UDP_PORT}", flush=True)
 
     while True:
         try:
@@ -322,24 +367,26 @@ def udp_flex_data_listener():
             try:
                 body = json.loads(packet.decode("utf-8"))
             except json.JSONDecodeError:
-                print(f"Invalid JSON from {address}")
+                print(f"Invalid JSON from {address}", flush=True)
                 continue
 
             result, error = buffer_flex_batch(body)
 
             if error:
                 message, status = error
-                print(f"UDP flex-data error from {address}: {status} {message}")
+                print(f"UDP flex-data error from {address}: {status} {message}", flush=True)
                 continue
 
-            print(
-                f"UDP flex-data buffered from {address}: "
-                f"session_id={result['session_id']} "
-                f"local_batch_count={result['local_batch_count']}"
-            )
+            if result["local_batch_count"] % 20 == 0:
+                print(
+                    f"UDP flex-data buffered: "
+                    f"session_id={result['session_id']} "
+                    f"local_batch_count={result['local_batch_count']}",
+                    flush=True
+                )
 
         except Exception as e:
-            print(f"UDP listener error: {e}")
+            print(f"UDP listener error: {e}", flush=True)
 
 
 def start_udp_thread_once():
@@ -356,7 +403,33 @@ def start_udp_thread_once():
         udp_thread.start()
 
         _udp_thread_started = True
-        print("UDP listener thread started")
+        print("UDP listener thread started", flush=True)
+
+
+@socketio.on("connect")
+def handle_socket_connect():
+    print("Browser WebSocket connected", flush=True)
+    emit_active_session_snapshot()
+
+
+@socketio.on("disconnect")
+def handle_socket_disconnect():
+    print("Browser WebSocket disconnected", flush=True)
+
+
+@socketio.on("request_active_session")
+def handle_request_active_session():
+    print("Browser requested active session", flush=True)
+    emit_active_session_snapshot()
+
+
+@socketio.on("ping_test")
+def handle_ping_test():
+    print("Browser ping_test received", flush=True)
+    emit("pong_test", {
+        "message": "WebSocket is working",
+        "time": utc_now_iso()
+    })
 
 
 class Exercise:
@@ -507,6 +580,16 @@ def go():
     return render_template("index.html")
 
 
+@app.get("/socket-debug")
+def socket_debug():
+    return jsonify({
+        "message": "Flask-SocketIO server is running",
+        "active_session": build_active_session_payload(),
+        "udp_host": UDP_HOST,
+        "udp_port": UDP_PORT
+    }), 200
+
+
 @app.post("/start_exercise")
 def start_exercise():
     body = request.get_json(silent=True) or {}
@@ -514,6 +597,15 @@ def start_exercise():
     custom_session_id = body.get("session_id")
 
     session = create_new_session(custom_session_id)
+
+    socketio.emit("session_started", {
+        "active": True,
+        "session_id": session["session_id"],
+        "start": session["start"],
+        "started_at": session["started_at"],
+        "stopped_at": session["stopped_at"],
+        "local_batch_count": session["local_batch_count"]
+    })
 
     return jsonify({
         "message": "Exercise started",
@@ -576,6 +668,16 @@ def stop_exercise():
             "local_batch_count": stopped_session["local_batch_count"]
         }), 500
 
+    socketio.emit("session_stopped", {
+        "active": False,
+        "session_id": stopped_session["session_id"],
+        "start": stopped_session["start"],
+        "stopped_at": stopped_session["stopped_at"],
+        "local_batch_count": stopped_session["local_batch_count"],
+        "database_saved_count": save_result["saved_count"],
+        "database_message": save_result["message"]
+    })
+
     return jsonify({
         "message": "Exercise stopped and saved to database",
         "session_id": stopped_session["session_id"],
@@ -589,13 +691,6 @@ def stop_exercise():
 
 @app.post("/flex-data")
 def post_flex_data():
-    """
-    Optional HTTP version of flex-data.
-
-    This buffers locally, same as UDP.
-    Data is written to MongoDB only after /stop_exercise.
-    """
-
     try:
         body = request.get_json()
         result, error = buffer_flex_batch(body)
@@ -612,18 +707,6 @@ def post_flex_data():
 
 @app.get("/active-session-data")
 def get_active_session_data():
-    """
-    Incremental in-memory active session endpoint.
-    No MongoDB read.
-
-    Client sends:
-        /active-session-data?after=123
-
-    Server returns only batches after that index.
-
-    This avoids sending the entire active session every few milliseconds.
-    """
-
     after_raw = request.args.get("after", "-1")
 
     try:
@@ -674,11 +757,6 @@ def get_active_session_data():
 
 @app.get("/current-exercise-data")
 def get_current_exercise_data():
-    """
-    Returns locally buffered in-memory data for the active or requested session.
-    This data may not be in MongoDB yet.
-    """
-
     session_id = request.args.get("session_id")
 
     with state_lock:
@@ -865,10 +943,11 @@ start_udp_thread_once()
 
 
 if __name__ == "__main__":
-    app.run(
+    socketio.run(
+        app,
         host="0.0.0.0",
-        debug=True,
         port=5000,
-        threaded=True,
-        use_reloader=False
+        debug=True,
+        use_reloader=False,
+        allow_unsafe_werkzeug=True
     )
