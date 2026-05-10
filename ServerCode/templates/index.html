@@ -392,6 +392,10 @@
       max-height: 500px;
     }
 
+    #wristPositionCanvas {
+      max-height: none;
+    }
+
     pre {
       background: #102230;
       color: #9ff0b5;
@@ -452,7 +456,7 @@
         </div>
       </div>
       <div class="topbar-note">
-        Real-time session tracking for patient flex sensor exercises, movement interpretation, and repetition counting.
+        Real-time session tracking for patient flex sensor exercises, IMU wrist angle visualization, and repetition counting.
       </div>
     </div>
   </header>
@@ -504,15 +508,16 @@
 
           <p>
             Expected data format:
-            <code>[[flex1, flex2, flex3], [flex1, flex2, flex3]]</code>
+            <code>[[flex1, flex2, flex3, angle_x, angle_y], ...]</code>
           </p>
         </div>
 
         <div class="card">
           <h2>Movement Rules</h2>
           <p>
-            Baseline is <strong>15</strong> for each sensor. A repetition is counted when sensor activity rises above baseline and then returns back to baseline or below.
+            Baseline is <strong>15</strong> for each flex sensor. A repetition is counted when sensor activity rises above baseline and then returns back to baseline or below.
           </p>
+
           <table class="sensor-table">
             <thead>
               <tr>
@@ -541,6 +546,18 @@
                 <td id="flex3Current">--</td>
                 <td id="flex3Movement" class="movement-off">No movement</td>
               </tr>
+              <tr>
+                <td>Angle X</td>
+                <td>0° neutral</td>
+                <td id="angleXCurrent">--</td>
+                <td id="angleXMovement" class="movement-off">No data</td>
+              </tr>
+              <tr>
+                <td>Angle Y</td>
+                <td>0° neutral</td>
+                <td id="angleYCurrent">--</td>
+                <td id="angleYMovement" class="movement-off">No data</td>
+              </tr>
             </tbody>
           </table>
         </div>
@@ -557,14 +574,14 @@
                 Start or load a session to calculate repetitions and movement activity.
               </p>
             </div>
-            <span class="baseline-pill">Baseline: 15 each</span>
+            <span class="baseline-pill">Flex Baseline: 15</span>
           </div>
 
           <div class="metrics-grid">
             <div class="metric-card">
               <div class="metric-label">Total Reps</div>
               <div id="totalReps" class="metric-value">0</div>
-              <div class="metric-subtext">All sensors combined</div>
+              <div class="metric-subtext">All flex sensors combined</div>
             </div>
             <div class="metric-card">
               <div class="metric-label">Flex 1 Reps</div>
@@ -589,6 +606,20 @@
           <canvas id="flexChart"></canvas>
         </div>
 
+        <div class="chart-container">
+          <h2>2D Wrist Position</h2>
+          <p>
+            Dot position uses <code>x = angle_x</code> and <code>y = angle_y</code>.
+            Center means neutral wrist position.
+          </p>
+          <canvas
+            id="wristPositionCanvas"
+            width="360"
+            height="360"
+            style="width: 100%; height: 360px; border: 1px solid var(--line); border-radius: 16px; background: #fbfdff;"
+          ></canvas>
+        </div>
+
         <div class="raw-card">
           <h2>Raw Response</h2>
           <pre id="rawOutput">Waiting for WebSocket...</pre>
@@ -602,1050 +633,1210 @@
   </main>
 
   <script>
-  let socket = null;
-  let currentSessionId = null;
-
-  const RAW_OUTPUT_INTERVAL_MS = 5000;
-  const FLEX_BASELINE = 15;
-  const MAX_LIVE_SAMPLES = 100;
-
-  let lastRawOutputMs = 0;
-
-  let fullData = createEmptyDataStore();
-  let liveStats = createEmptyStats();
-
-  document
-    .getElementById("sessionIdInput")
-    .addEventListener("keydown", function (event) {
-      if (event.key === "Enter") {
-        loadCustomSession();
-      }
-    });
-
-  function debugLog(label, data = null) {
-    const time = new Date().toLocaleTimeString();
-
-    if (data === null || data === undefined) {
-      console.log(`[${time}] ${label}`);
-      return;
-    }
-
-    console.log(`[${time}] ${label}`, data);
-  }
-
-  function debugWarn(label, data = null) {
-    const time = new Date().toLocaleTimeString();
-
-    if (data === null || data === undefined) {
-      console.warn(`[${time}] ${label}`);
-      return;
-    }
-
-    console.warn(`[${time}] ${label}`, data);
-  }
-
-  function debugError(label, data = null) {
-    const time = new Date().toLocaleTimeString();
-
-    if (data === null || data === undefined) {
-      console.error(`[${time}] ${label}`);
-      return;
-    }
-
-    console.error(`[${time}] ${label}`, data);
-  }
-
-  function createEmptyDataStore() {
-    return {
-      globalSampleIndex: 0,
-      sampleIndexes: [],
-      sampleTimes: [],
-      flex1: [],
-      flex2: [],
-      flex3: [],
-      baseline: []
-    };
-  }
-
-  function createEmptyStats() {
-    return {
-      reps: [0, 0, 0],
-      aboveBaseline: [false, false, false],
-      latest: [null, null, null],
-      totalSamples: 0,
-      totalBatches: 0,
-      firstTime: null,
-      lastTime: null
-    };
-  }
-
-  function resetLiveMemory() {
-    debugLog("Resetting live memory");
-
-    fullData = createEmptyDataStore();
-    liveStats = createEmptyStats();
-  }
-
-  function setConnectionStatus(text, className) {
-    const el = document.getElementById("connectionStatus");
-
-    if (!el) {
-      debugWarn("connectionStatus element missing");
-      return;
-    }
-
-    el.textContent = text;
-    el.className = className;
-  }
-
-  function formatTime(date) {
-    if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
-      return "--";
-    }
-
-    return date.toLocaleTimeString([], {
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit"
-    });
-  }
-
-  function formatDateTime(date) {
-    if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
-      return "--";
-    }
-
-    return date.toLocaleString([], {
-      year: "numeric",
-      month: "short",
-      day: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit"
-    });
-  }
-
-  function getBatchStopTime(batch) {
-    const createdAt = batch.created_at ? new Date(batch.created_at) : null;
-
-    if (!createdAt || Number.isNaN(createdAt.getTime())) {
-      return null;
-    }
-
-    return createdAt;
-  }
-
-  function getBatchStartTime(batch) {
-    const stopTime = getBatchStopTime(batch);
-
-    if (!stopTime) {
-      return null;
-    }
-
-    const durationSeconds = Number(batch.batch_duration_seconds || 0);
-
-    return new Date(stopTime.getTime() - durationSeconds * 1000);
-  }
-
-  function getSampleTimestamp(batch, rowIndex, totalRows) {
-    const startTime = getBatchStartTime(batch);
-    const stopTime = getBatchStopTime(batch);
-
-    if (!startTime || !stopTime) {
-      return null;
-    }
-
-    if (!totalRows || totalRows <= 1) {
-      return stopTime;
-    }
-
-    const progress = rowIndex / (totalRows - 1);
-
-    return new Date(
-      startTime.getTime() +
-      progress * (stopTime.getTime() - startTime.getTime())
-    );
-  }
-
-  function updateStatsForSensor(sensorIndex, value) {
-    if (!Number.isFinite(value)) {
-      return;
-    }
-
-    if (value > FLEX_BASELINE && !liveStats.aboveBaseline[sensorIndex]) {
-      liveStats.aboveBaseline[sensorIndex] = true;
-    }
-
-    if (value <= FLEX_BASELINE && liveStats.aboveBaseline[sensorIndex]) {
-      liveStats.reps[sensorIndex] += 1;
-      liveStats.aboveBaseline[sensorIndex] = false;
-    }
-  }
-
-  function appendBatchToFullData(batch) {
-    if (!batch) {
-      debugWarn("appendBatchToFullData skipped: missing batch");
-      return;
-    }
-
-    if (!Array.isArray(batch.data)) {
-      debugWarn("appendBatchToFullData skipped: batch.data is not an array", batch);
-      return;
-    }
-
-    const rows = batch.data;
-
-    if (rows.length === 0) {
-      debugWarn("appendBatchToFullData skipped: batch.data is empty", batch);
-      return;
-    }
-
-    liveStats.totalBatches += 1;
-
-    let validRows = 0;
-
-    for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
-      const row = rows[rowIndex];
-
-      if (!Array.isArray(row) || row.length < 3) {
-        debugWarn("Skipping invalid row", row);
-        continue;
-      }
-
-      const sampleTime = getSampleTimestamp(batch, rowIndex, rows.length);
-
-      const v1 = Number(row[0]);
-      const v2 = Number(row[1]);
-      const v3 = Number(row[2]);
-
-      fullData.sampleIndexes.push(fullData.globalSampleIndex);
-      fullData.sampleTimes.push(sampleTime);
-      fullData.flex1.push(v1);
-      fullData.flex2.push(v2);
-      fullData.flex3.push(v3);
-      fullData.baseline.push(FLEX_BASELINE);
-      fullData.globalSampleIndex += 1;
-
-      updateStatsForSensor(0, v1);
-      updateStatsForSensor(1, v2);
-      updateStatsForSensor(2, v3);
-
-      if (Number.isFinite(v1)) {
-        liveStats.latest[0] = v1;
-      }
-
-      if (Number.isFinite(v2)) {
-        liveStats.latest[1] = v2;
-      }
-
-      if (Number.isFinite(v3)) {
-        liveStats.latest[2] = v3;
-      }
-
-      if (!liveStats.firstTime && sampleTime) {
-        liveStats.firstTime = sampleTime;
-      }
-
-      if (sampleTime) {
-        liveStats.lastTime = sampleTime;
-      }
-
-      liveStats.totalSamples += 1;
-      validRows += 1;
-    }
-
-    trimLiveWindow();
-
-    debugLog("Batch appended", {
-      validRows,
-      visibleSamples: fullData.sampleIndexes.length,
-      totalSamples: liveStats.totalSamples,
-      latest: liveStats.latest.slice(),
-      lastFlex1: fullData.flex1.slice(-5),
-      lastFlex2: fullData.flex2.slice(-5),
-      lastFlex3: fullData.flex3.slice(-5)
-    });
-  }
-
-  function appendBatchesToFullData(batches) {
-    if (!Array.isArray(batches)) {
-      debugWarn("appendBatchesToFullData skipped: batches is not an array", batches);
-      return;
-    }
-
-    for (let i = 0; i < batches.length; i += 1) {
-      appendBatchToFullData(batches[i]);
-    }
-  }
-
-  function trimLiveWindow() {
-    const extra = fullData.sampleTimes.length - MAX_LIVE_SAMPLES;
-
-    if (extra <= 0) {
-      return;
-    }
-
-    fullData.sampleIndexes.splice(0, extra);
-    fullData.sampleTimes.splice(0, extra);
-    fullData.flex1.splice(0, extra);
-    fullData.flex2.splice(0, extra);
-    fullData.flex3.splice(0, extra);
-    fullData.baseline.splice(0, extra);
-
-    debugLog("Trimmed live window", {
-      removedSamples: extra,
-      remainingSamples: fullData.sampleTimes.length
-    });
-  }
-
-  function connectSocket() {
-    debugLog("connectSocket called");
-
-    if (typeof io === "undefined") {
-      debugError("Socket.IO client failed to load. The io global is undefined.");
-      setRawOutputText("Socket.IO client failed to load. Check the socket.io script tag.", true);
-      setConnectionStatus("Socket script missing", "inactive");
-      return;
-    }
-
-    setConnectionStatus("Connecting...", "neutral");
-
-    socket = io(window.location.origin, {
-      transports: ["polling", "websocket"],
-      reconnection: true,
-      reconnectionAttempts: Infinity,
-      reconnectionDelay: 500,
-      timeout: 5000
-    });
-
-    socket.on("connect", function () {
-      debugLog("Socket connected", {
-        socketId: socket.id,
-        transport: socket.io.engine.transport.name
+    let socket = null;
+    let currentSessionId = null;
+
+    const RAW_OUTPUT_INTERVAL_MS = 5000;
+    const FLEX_BASELINE = 15;
+    const MAX_LIVE_SAMPLES = 100;
+    const WRIST_MAX_ANGLE = 90;
+
+    let lastRawOutputMs = 0;
+
+    let fullData = createEmptyDataStore();
+    let liveStats = createEmptyStats();
+
+    document
+      .getElementById("sessionIdInput")
+      .addEventListener("keydown", function (event) {
+        if (event.key === "Enter") {
+          loadCustomSession();
+        }
       });
 
-      setConnectionStatus("Connected", "active");
+    function debugLog(label, data = null) {
+      const time = new Date().toLocaleTimeString();
 
-      setRawOutputText(
-        `WebSocket connected
+      if (data === null || data === undefined) {
+        console.log(`[${time}] ${label}`);
+        return;
+      }
+
+      console.log(`[${time}] ${label}`, data);
+    }
+
+    function debugWarn(label, data = null) {
+      const time = new Date().toLocaleTimeString();
+
+      if (data === null || data === undefined) {
+        console.warn(`[${time}] ${label}`);
+        return;
+      }
+
+      console.warn(`[${time}] ${label}`, data);
+    }
+
+    function debugError(label, data = null) {
+      const time = new Date().toLocaleTimeString();
+
+      if (data === null || data === undefined) {
+        console.error(`[${time}] ${label}`);
+        return;
+      }
+
+      console.error(`[${time}] ${label}`, data);
+    }
+
+    function createEmptyDataStore() {
+      return {
+        globalSampleIndex: 0,
+        sampleIndexes: [],
+        sampleTimes: [],
+        flex1: [],
+        flex2: [],
+        flex3: [],
+        angleX: [],
+        angleY: [],
+        baseline: []
+      };
+    }
+
+    function createEmptyStats() {
+      return {
+        reps: [0, 0, 0],
+        aboveBaseline: [false, false, false],
+        latest: [null, null, null],
+        latestAngleX: null,
+        latestAngleY: null,
+        totalSamples: 0,
+        totalBatches: 0,
+        firstTime: null,
+        lastTime: null
+      };
+    }
+
+    function resetLiveMemory() {
+      debugLog("Resetting live memory");
+
+      fullData = createEmptyDataStore();
+      liveStats = createEmptyStats();
+    }
+
+    function setConnectionStatus(text, className) {
+      const el = document.getElementById("connectionStatus");
+
+      if (!el) {
+        debugWarn("connectionStatus element missing");
+        return;
+      }
+
+      el.textContent = text;
+      el.className = className;
+    }
+
+    function formatDateTime(date) {
+      if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
+        return "--";
+      }
+
+      return date.toLocaleString([], {
+        year: "numeric",
+        month: "short",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit"
+      });
+    }
+
+    function getBatchStopTime(batch) {
+      const createdAt = batch.created_at ? new Date(batch.created_at) : null;
+
+      if (!createdAt || Number.isNaN(createdAt.getTime())) {
+        return null;
+      }
+
+      return createdAt;
+    }
+
+    function getBatchStartTime(batch) {
+      const stopTime = getBatchStopTime(batch);
+
+      if (!stopTime) {
+        return null;
+      }
+
+      const durationSeconds = Number(batch.batch_duration_seconds || 0);
+
+      return new Date(stopTime.getTime() - durationSeconds * 1000);
+    }
+
+    function getSampleTimestamp(batch, rowIndex, totalRows) {
+      const startTime = getBatchStartTime(batch);
+      const stopTime = getBatchStopTime(batch);
+
+      if (!startTime || !stopTime) {
+        return null;
+      }
+
+      if (!totalRows || totalRows <= 1) {
+        return stopTime;
+      }
+
+      const progress = rowIndex / (totalRows - 1);
+
+      return new Date(
+        startTime.getTime() +
+        progress * (stopTime.getTime() - startTime.getTime())
+      );
+    }
+
+    function updateStatsForSensor(sensorIndex, value) {
+      if (!Number.isFinite(value)) {
+        return;
+      }
+
+      if (value > FLEX_BASELINE && !liveStats.aboveBaseline[sensorIndex]) {
+        liveStats.aboveBaseline[sensorIndex] = true;
+      }
+
+      if (value <= FLEX_BASELINE && liveStats.aboveBaseline[sensorIndex]) {
+        liveStats.reps[sensorIndex] += 1;
+        liveStats.aboveBaseline[sensorIndex] = false;
+      }
+    }
+
+    function appendBatchToFullData(batch) {
+      if (!batch) {
+        debugWarn("appendBatchToFullData skipped: missing batch");
+        return;
+      }
+
+      if (!Array.isArray(batch.data)) {
+        debugWarn("appendBatchToFullData skipped: batch.data is not an array", batch);
+        return;
+      }
+
+      const rows = batch.data;
+
+      if (rows.length === 0) {
+        debugWarn("appendBatchToFullData skipped: batch.data is empty", batch);
+        return;
+      }
+
+      liveStats.totalBatches += 1;
+
+      let validRows = 0;
+
+      for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
+        const row = rows[rowIndex];
+
+        if (!Array.isArray(row) || row.length < 5) {
+          debugWarn("Skipping invalid row. Expected [flex1, flex2, flex3, angle_x, angle_y]", row);
+          continue;
+        }
+
+        const sampleTime = getSampleTimestamp(batch, rowIndex, rows.length);
+
+        const v1 = Number(row[0]);
+        const v2 = Number(row[1]);
+        const v3 = Number(row[2]);
+        const angleX = Number(row[3]);
+        const angleY = Number(row[4]);
+
+        fullData.sampleIndexes.push(fullData.globalSampleIndex);
+        fullData.sampleTimes.push(sampleTime);
+
+        fullData.flex1.push(v1);
+        fullData.flex2.push(v2);
+        fullData.flex3.push(v3);
+        fullData.angleX.push(angleX);
+        fullData.angleY.push(angleY);
+        fullData.baseline.push(FLEX_BASELINE);
+
+        fullData.globalSampleIndex += 1;
+
+        updateStatsForSensor(0, v1);
+        updateStatsForSensor(1, v2);
+        updateStatsForSensor(2, v3);
+
+        if (Number.isFinite(v1)) {
+          liveStats.latest[0] = v1;
+        }
+
+        if (Number.isFinite(v2)) {
+          liveStats.latest[1] = v2;
+        }
+
+        if (Number.isFinite(v3)) {
+          liveStats.latest[2] = v3;
+        }
+
+        if (Number.isFinite(angleX)) {
+          liveStats.latestAngleX = angleX;
+        }
+
+        if (Number.isFinite(angleY)) {
+          liveStats.latestAngleY = angleY;
+        }
+
+        if (!liveStats.firstTime && sampleTime) {
+          liveStats.firstTime = sampleTime;
+        }
+
+        if (sampleTime) {
+          liveStats.lastTime = sampleTime;
+        }
+
+        liveStats.totalSamples += 1;
+        validRows += 1;
+      }
+
+      trimLiveWindow();
+
+      debugLog("Batch appended", {
+        validRows,
+        visibleSamples: fullData.sampleIndexes.length,
+        totalSamples: liveStats.totalSamples,
+        latestFlex: liveStats.latest.slice(),
+        latestAngleX: liveStats.latestAngleX,
+        latestAngleY: liveStats.latestAngleY
+      });
+    }
+
+    function appendBatchesToFullData(batches) {
+      if (!Array.isArray(batches)) {
+        debugWarn("appendBatchesToFullData skipped: batches is not an array", batches);
+        return;
+      }
+
+      for (let i = 0; i < batches.length; i += 1) {
+        appendBatchToFullData(batches[i]);
+      }
+    }
+
+    function trimLiveWindow() {
+      const extra = fullData.sampleTimes.length - MAX_LIVE_SAMPLES;
+
+      if (extra <= 0) {
+        return;
+      }
+
+      fullData.sampleIndexes.splice(0, extra);
+      fullData.sampleTimes.splice(0, extra);
+      fullData.flex1.splice(0, extra);
+      fullData.flex2.splice(0, extra);
+      fullData.flex3.splice(0, extra);
+      fullData.angleX.splice(0, extra);
+      fullData.angleY.splice(0, extra);
+      fullData.baseline.splice(0, extra);
+
+      debugLog("Trimmed live window", {
+        removedSamples: extra,
+        remainingSamples: fullData.sampleTimes.length
+      });
+    }
+
+    function connectSocket() {
+      debugLog("connectSocket called");
+
+      if (typeof io === "undefined") {
+        debugError("Socket.IO client failed to load. The io global is undefined.");
+        setRawOutputText("Socket.IO client failed to load. Check the socket.io script tag.", true);
+        setConnectionStatus("Socket script missing", "inactive");
+        return;
+      }
+
+      setConnectionStatus("Connecting...", "neutral");
+
+      socket = io(window.location.origin, {
+        transports: ["polling", "websocket"],
+        reconnection: true,
+        reconnectionAttempts: Infinity,
+        reconnectionDelay: 500,
+        timeout: 5000
+      });
+
+      socket.on("connect", function () {
+        debugLog("Socket connected", {
+          socketId: socket.id,
+          transport: socket.io.engine.transport.name
+        });
+
+        setConnectionStatus("Connected", "active");
+
+        setRawOutputText(
+          `WebSocket connected
 Socket ID: ${socket.id}
 Transport: ${socket.io.engine.transport.name}`,
-        true
-      );
+          true
+        );
 
-      socket.emit("ping_test");
-      socket.emit("request_active_session");
-    });
-
-    socket.io.on("upgrade", function () {
-      debugLog("Socket transport upgraded", {
-        transport: socket.io.engine.transport.name
+        socket.emit("ping_test");
+        socket.emit("request_active_session");
       });
-    });
 
-    socket.on("connect_error", function (error) {
-      debugError("Socket connection error", error);
+      socket.io.on("upgrade", function () {
+        debugLog("Socket transport upgraded", {
+          transport: socket.io.engine.transport.name
+        });
+      });
 
-      setConnectionStatus("Socket error", "inactive");
+      socket.on("connect_error", function (error) {
+        debugError("Socket connection error", error);
 
-      setRawOutputText(
-        `WebSocket connection error
+        setConnectionStatus("Socket error", "inactive");
+
+        setRawOutputText(
+          `WebSocket connection error
 ${error && error.message ? error.message : String(error)}
 
 Open /socket-debug in your browser.
 Make sure you started the server with: python main.py`,
-        true
-      );
-    });
-
-    socket.on("pong_test", function (data) {
-      debugLog("Received pong_test", data);
-
-      setRawOutputText(
-        `WebSocket test OK
-${JSON.stringify(data, null, 2)}`,
-        true
-      );
-    });
-
-    socket.on("disconnect", function (reason) {
-      debugWarn("Socket disconnected", reason);
-
-      setConnectionStatus("Disconnected", "inactive");
-
-      setRawOutputText(
-        `WebSocket disconnected
-Reason: ${reason}`,
-        true
-      );
-
-      document.getElementById("sessionStatus").textContent = "Disconnected";
-      document.getElementById("sessionStatus").className = "inactive";
-    });
-
-    socket.on("active_session_state", function (data) {
-      debugLog("Received active_session_state", data);
-      handleSessionState(data);
-    });
-
-    socket.on("active_session_snapshot", function (data) {
-      debugLog("Received active_session_snapshot", {
-        session_id: data && data.session_id,
-        batchCount: data && Array.isArray(data.batches) ? data.batches.length : null,
-        local_batch_count: data && data.local_batch_count
+          true
+        );
       });
 
-      if (!data || !data.session_id) {
-        debugWarn("Ignoring active_session_snapshot because no session_id exists", data);
-        return;
-      }
+      socket.on("pong_test", function (data) {
+        debugLog("Received pong_test", data);
 
-      currentSessionId = data.session_id;
-      resetLiveMemory();
+        setRawOutputText(
+          `WebSocket test OK
+${JSON.stringify(data, null, 2)}`,
+          true
+        );
+      });
 
-      appendBatchesToFullData(data.batches || []);
+      socket.on("disconnect", function (reason) {
+        debugWarn("Socket disconnected", reason);
 
-      document.getElementById("sessionStatus").textContent = "Active";
-      document.getElementById("sessionStatus").className = "active";
-      document.getElementById("activeSessionId").textContent = currentSessionId;
-      document.getElementById("sessionIdInput").value = currentSessionId;
-      document.getElementById("lastUpdated").textContent =
-        new Date().toLocaleTimeString();
+        setConnectionStatus("Disconnected", "inactive");
 
-      updateExerciseSummaryFromStats();
-      renderChartNow();
+        setRawOutputText(
+          `WebSocket disconnected
+Reason: ${reason}`,
+          true
+        );
 
-      setRawOutputText(
-        `Loaded active session snapshot
+        document.getElementById("sessionStatus").textContent = "Disconnected";
+        document.getElementById("sessionStatus").className = "inactive";
+      });
+
+      socket.on("active_session_state", function (data) {
+        debugLog("Received active_session_state", data);
+        handleSessionState(data);
+      });
+
+      socket.on("active_session_snapshot", function (data) {
+        debugLog("Received active_session_snapshot", {
+          session_id: data && data.session_id,
+          batchCount: data && Array.isArray(data.batches) ? data.batches.length : null,
+          local_batch_count: data && data.local_batch_count
+        });
+
+        if (!data || !data.session_id) {
+          debugWarn("Ignoring active_session_snapshot because no session_id exists", data);
+          return;
+        }
+
+        currentSessionId = data.session_id;
+        resetLiveMemory();
+
+        appendBatchesToFullData(data.batches || []);
+
+        document.getElementById("sessionStatus").textContent = "Active";
+        document.getElementById("sessionStatus").className = "active";
+        document.getElementById("activeSessionId").textContent = currentSessionId;
+        document.getElementById("sessionIdInput").value = currentSessionId;
+        document.getElementById("lastUpdated").textContent =
+          new Date().toLocaleTimeString();
+
+        updateExerciseSummaryFromStats();
+        renderChartNow();
+
+        setRawOutputText(
+          `Loaded active session snapshot
 Session: ${currentSessionId}
 Batches loaded: ${(data.batches || []).length}
 Visible samples: ${fullData.sampleTimes.length}
 Total processed: ${liveStats.totalSamples}`,
-        true
-      );
-    });
-
-    socket.on("session_started", function (data) {
-      debugLog("Received session_started", data);
-
-      currentSessionId = data.session_id;
-      resetLiveMemory();
-      clearCharts();
-      resetExerciseSummary();
-
-      document.getElementById("sessionStatus").textContent = "Active";
-      document.getElementById("sessionStatus").className = "active";
-      document.getElementById("activeSessionId").textContent = currentSessionId;
-      document.getElementById("sessionIdInput").value = currentSessionId;
-      document.getElementById("lastUpdated").textContent =
-        new Date().toLocaleTimeString();
-
-      setRawOutputText(
-        `Session started
-Session: ${currentSessionId}`,
-        true
-      );
-    });
-
-    socket.on("flex_batch", function (data) {
-      debugLog("Received flex_batch", {
-        session_id: data && data.session_id,
-        local_batch_count: data && data.local_batch_count,
-        batchRows: data && data.batch && Array.isArray(data.batch.data) ? data.batch.data.length : null,
-        firstRow: data && data.batch && Array.isArray(data.batch.data) ? data.batch.data[0] : null
+          true
+        );
       });
 
-      if (!data || !data.batch) {
-        debugWarn("Ignoring flex_batch because data.batch is missing", data);
-        return;
-      }
-
-      if (data.session_id !== currentSessionId) {
-        debugWarn("flex_batch session changed; resetting graph", {
-          oldSession: currentSessionId,
-          newSession: data.session_id
-        });
+      socket.on("session_started", function (data) {
+        debugLog("Received session_started", data);
 
         currentSessionId = data.session_id;
         resetLiveMemory();
         clearCharts();
         resetExerciseSummary();
-      }
 
-      document.getElementById("sessionStatus").textContent = "Active";
-      document.getElementById("sessionStatus").className = "active";
-      document.getElementById("activeSessionId").textContent = currentSessionId;
-      document.getElementById("sessionIdInput").value = currentSessionId;
-      document.getElementById("lastUpdated").textContent =
-        new Date().toLocaleTimeString();
+        document.getElementById("sessionStatus").textContent = "Active";
+        document.getElementById("sessionStatus").className = "active";
+        document.getElementById("activeSessionId").textContent = currentSessionId;
+        document.getElementById("sessionIdInput").value = currentSessionId;
+        document.getElementById("lastUpdated").textContent =
+          new Date().toLocaleTimeString();
 
-      appendBatchToFullData(data.batch);
+        setRawOutputText(
+          `Session started
+Session: ${currentSessionId}`,
+          true
+        );
+      });
 
-      updateExerciseSummaryFromStats();
-      renderChartNow();
+      socket.on("flex_batch", function (data) {
+        debugLog("Received flex_batch", {
+          session_id: data && data.session_id,
+          local_batch_count: data && data.local_batch_count,
+          batchRows: data && data.batch && Array.isArray(data.batch.data) ? data.batch.data.length : null,
+          firstRow: data && data.batch && Array.isArray(data.batch.data) ? data.batch.data[0] : null
+        });
 
-      setRawOutputText(
-        `WebSocket live
+        if (!data || !data.batch) {
+          debugWarn("Ignoring flex_batch because data.batch is missing", data);
+          return;
+        }
+
+        if (data.session_id !== currentSessionId) {
+          debugWarn("flex_batch session changed; resetting graph", {
+            oldSession: currentSessionId,
+            newSession: data.session_id
+          });
+
+          currentSessionId = data.session_id;
+          resetLiveMemory();
+          clearCharts();
+          resetExerciseSummary();
+        }
+
+        document.getElementById("sessionStatus").textContent = "Active";
+        document.getElementById("sessionStatus").className = "active";
+        document.getElementById("activeSessionId").textContent = currentSessionId;
+        document.getElementById("sessionIdInput").value = currentSessionId;
+        document.getElementById("lastUpdated").textContent =
+          new Date().toLocaleTimeString();
+
+        appendBatchToFullData(data.batch);
+
+        updateExerciseSummaryFromStats();
+        renderChartNow();
+
+        setRawOutputText(
+          `WebSocket live
 Session: ${currentSessionId}
 Local batches: ${data.local_batch_count}
 Visible samples: ${fullData.sampleTimes.length}
 Total processed: ${liveStats.totalSamples}
+
 Latest:
 Flex 1: ${liveStats.latest[0]}
 Flex 2: ${liveStats.latest[1]}
-Flex 3: ${liveStats.latest[2]}`,
-        true
-      );
-    });
-
-    socket.on("session_stopped", function (data) {
-      debugLog("Received session_stopped", data);
-
-      document.getElementById("sessionStatus").textContent = "Stopped";
-      document.getElementById("sessionStatus").className = "inactive";
-      document.getElementById("activeSessionId").textContent =
-        data.session_id || "None";
-      document.getElementById("lastUpdated").textContent =
-        new Date().toLocaleTimeString();
-
-      setRawOutputText(
-        `Session stopped
-Session: ${data.session_id}
-Saved batches: ${data.database_saved_count}`,
-        true
-      );
-
-      currentSessionId = null;
-    });
-  }
-
-  function handleSessionState(data) {
-    const statusEl = document.getElementById("sessionStatus");
-    const sessionEl = document.getElementById("activeSessionId");
-
-    if (!data || !data.active || !data.session_id) {
-      debugLog("No active session from active_session_state");
-
-      statusEl.textContent = "No active session";
-      statusEl.className = "inactive";
-      sessionEl.textContent = "None";
-      currentSessionId = null;
-      return;
-    }
-
-    currentSessionId = data.session_id;
-
-    statusEl.textContent = "Active";
-    statusEl.className = "active";
-    sessionEl.textContent = currentSessionId;
-    document.getElementById("sessionIdInput").value = currentSessionId;
-    document.getElementById("lastUpdated").textContent =
-      new Date().toLocaleTimeString();
-  }
-
-  async function startExercise() {
-    debugLog("Start Exercise clicked");
-
-    try {
-      const response = await fetch("/start_exercise", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({})
+Flex 3: ${liveStats.latest[2]}
+Angle X: ${liveStats.latestAngleX}
+Angle Y: ${liveStats.latestAngleY}`,
+          true
+        );
       });
 
-      const json = await response.json();
+      socket.on("session_stopped", function (data) {
+        debugLog("Received session_stopped", data);
 
-      debugLog("start_exercise response", json);
+        document.getElementById("sessionStatus").textContent = "Stopped";
+        document.getElementById("sessionStatus").className = "inactive";
+        document.getElementById("activeSessionId").textContent =
+          data.session_id || "None";
+        document.getElementById("lastUpdated").textContent =
+          new Date().toLocaleTimeString();
 
-      if (!response.ok) {
-        alert(json.error || "Failed to start exercise.");
+        setRawOutputText(
+          `Session stopped
+Session: ${data.session_id}
+Saved batches: ${data.database_saved_count}`,
+          true
+        );
+
+        currentSessionId = null;
+      });
+    }
+
+    function handleSessionState(data) {
+      const statusEl = document.getElementById("sessionStatus");
+      const sessionEl = document.getElementById("activeSessionId");
+
+      if (!data || !data.active || !data.session_id) {
+        debugLog("No active session from active_session_state");
+
+        statusEl.textContent = "No active session";
+        statusEl.className = "inactive";
+        sessionEl.textContent = "None";
+        currentSessionId = null;
         return;
       }
 
-      currentSessionId = json.session_id;
-      resetLiveMemory();
-      clearCharts();
-      resetExerciseSummary();
+      currentSessionId = data.session_id;
 
-      document.getElementById("sessionStatus").textContent = "Active";
-      document.getElementById("sessionStatus").className = "active";
-      document.getElementById("activeSessionId").textContent = currentSessionId;
+      statusEl.textContent = "Active";
+      statusEl.className = "active";
+      sessionEl.textContent = currentSessionId;
       document.getElementById("sessionIdInput").value = currentSessionId;
       document.getElementById("lastUpdated").textContent =
         new Date().toLocaleTimeString();
-
-      setRawOutputText(
-        `Session started
-Session: ${currentSessionId}`,
-        true
-      );
-
-    } catch (error) {
-      debugError("Failed to start exercise", error);
-      alert("Failed to start exercise.");
-      setRawOutputText(`Failed to start exercise\n${error}`, true);
-    }
-  }
-
-  async function stopExercise() {
-    debugLog("Stop Exercise clicked");
-
-    try {
-      const payload = {};
-
-      if (currentSessionId) {
-        payload.session_id = currentSessionId;
-      }
-
-      const response = await fetch("/stop_exercise", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify(payload)
-      });
-
-      const json = await response.json();
-
-      debugLog("stop_exercise response", json);
-
-      if (!response.ok) {
-        alert(json.error || "Failed to stop exercise.");
-        return;
-      }
-
-      document.getElementById("sessionStatus").textContent = "Stopped";
-      document.getElementById("sessionStatus").className = "inactive";
-      document.getElementById("activeSessionId").textContent =
-        json.session_id || "None";
-
-      setRawOutputText(
-        `Session stopped
-Session: ${json.session_id}
-Saved batches: ${json.database_saved_count}`,
-        true
-      );
-
-      currentSessionId = null;
-
-    } catch (error) {
-      debugError("Failed to stop exercise", error);
-      alert("Failed to stop exercise.");
-      setRawOutputText(`Failed to stop exercise\n${error}`, true);
-    }
-  }
-
-  async function loadCustomSession() {
-    const sessionId = document.getElementById("sessionIdInput").value.trim();
-
-    debugLog("Load custom session clicked", sessionId);
-
-    if (!sessionId) {
-      alert("Please enter a session ID.");
-      return;
     }
 
-    currentSessionId = sessionId;
-    resetLiveMemory();
+    async function startExercise() {
+      debugLog("Start Exercise clicked");
 
-    document.getElementById("activeSessionId").textContent = sessionId;
-    document.getElementById("sessionStatus").textContent = "Custom Session";
-    document.getElementById("sessionStatus").className = "neutral";
+      try {
+        const response = await fetch("/start_exercise", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({})
+        });
 
-    await loadExerciseDataFromDatabase(sessionId, true);
-  }
+        const json = await response.json();
 
-  async function loadExerciseDataFromDatabase(sessionId, showAlerts) {
-    const url = `/exercise-data?session_id=${encodeURIComponent(sessionId)}`;
+        debugLog("start_exercise response", json);
 
-    debugLog("Loading exercise data from database", url);
-
-    try {
-      const response = await fetch(url, {
-        cache: "no-store"
-      });
-
-      const json = await response.json();
-
-      debugLog("exercise-data response", {
-        ok: response.ok,
-        found: json.found,
-        batchCount: Array.isArray(json.batches) ? json.batches.length : null
-      });
-
-      document.getElementById("lastUpdated").textContent =
-        new Date().toLocaleTimeString();
-
-      if (!response.ok || !json.found) {
-        if (showAlerts) {
-          alert(`No database data found for session ID: ${sessionId}`);
+        if (!response.ok) {
+          alert(json.error || "Failed to start exercise.");
+          return;
         }
 
+        currentSessionId = json.session_id;
+        resetLiveMemory();
         clearCharts();
         resetExerciseSummary();
-        resetLiveMemory();
+
+        document.getElementById("sessionStatus").textContent = "Active";
+        document.getElementById("sessionStatus").className = "active";
+        document.getElementById("activeSessionId").textContent = currentSessionId;
+        document.getElementById("sessionIdInput").value = currentSessionId;
+        document.getElementById("lastUpdated").textContent =
+          new Date().toLocaleTimeString();
+
+        setRawOutputText(
+          `Session started
+Session: ${currentSessionId}`,
+          true
+        );
+
+      } catch (error) {
+        debugError("Failed to start exercise", error);
+        alert("Failed to start exercise.");
+        setRawOutputText(`Failed to start exercise\n${error}`, true);
+      }
+    }
+
+    async function stopExercise() {
+      debugLog("Stop Exercise clicked");
+
+      try {
+        const payload = {};
+
+        if (currentSessionId) {
+          payload.session_id = currentSessionId;
+        }
+
+        const response = await fetch("/stop_exercise", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify(payload)
+        });
+
+        const json = await response.json();
+
+        debugLog("stop_exercise response", json);
+
+        if (!response.ok) {
+          alert(json.error || "Failed to stop exercise.");
+          return;
+        }
+
+        document.getElementById("sessionStatus").textContent = "Stopped";
+        document.getElementById("sessionStatus").className = "inactive";
+        document.getElementById("activeSessionId").textContent =
+          json.session_id || "None";
+
+        setRawOutputText(
+          `Session stopped
+Session: ${json.session_id}
+Saved batches: ${json.database_saved_count}`,
+          true
+        );
+
+        currentSessionId = null;
+
+      } catch (error) {
+        debugError("Failed to stop exercise", error);
+        alert("Failed to stop exercise.");
+        setRawOutputText(`Failed to stop exercise\n${error}`, true);
+      }
+    }
+
+    async function loadCustomSession() {
+      const sessionId = document.getElementById("sessionIdInput").value.trim();
+
+      debugLog("Load custom session clicked", sessionId);
+
+      if (!sessionId) {
+        alert("Please enter a session ID.");
         return;
       }
 
+      currentSessionId = sessionId;
       resetLiveMemory();
-      appendBatchesToFullData(json.batches || []);
 
-      updateExerciseSummaryFromStats();
-      renderChartNow();
+      document.getElementById("activeSessionId").textContent = sessionId;
+      document.getElementById("sessionStatus").textContent = "Custom Session";
+      document.getElementById("sessionStatus").className = "neutral";
 
-      setRawOutputText(
-        `Loaded from database
+      await loadExerciseDataFromDatabase(sessionId, true);
+    }
+
+    async function loadExerciseDataFromDatabase(sessionId, showAlerts) {
+      const url = `/exercise-data?session_id=${encodeURIComponent(sessionId)}`;
+
+      debugLog("Loading exercise data from database", url);
+
+      try {
+        const response = await fetch(url, {
+          cache: "no-store"
+        });
+
+        const json = await response.json();
+
+        debugLog("exercise-data response", {
+          ok: response.ok,
+          found: json.found,
+          batchCount: Array.isArray(json.batches) ? json.batches.length : null
+        });
+
+        document.getElementById("lastUpdated").textContent =
+          new Date().toLocaleTimeString();
+
+        if (!response.ok || !json.found) {
+          if (showAlerts) {
+            alert(`No database data found for session ID: ${sessionId}`);
+          }
+
+          clearCharts();
+          resetExerciseSummary();
+          resetLiveMemory();
+          return;
+        }
+
+        resetLiveMemory();
+        appendBatchesToFullData(json.batches || []);
+
+        updateExerciseSummaryFromStats();
+        renderChartNow();
+
+        setRawOutputText(
+          `Loaded from database
 Session: ${sessionId}
 Visible samples: ${fullData.sampleTimes.length}
 Total processed: ${liveStats.totalSamples}`,
-        true
+          true
+        );
+
+      } catch (error) {
+        debugError("Failed to load exercise data", error);
+
+        if (showAlerts) {
+          alert("Failed to load exercise data.");
+        }
+
+        setRawOutputText(`Failed to load exercise data\n${error}`, true);
+      }
+    }
+
+    function setRawOutputText(value, force = false) {
+      const now = performance.now();
+
+      if (!force && now - lastRawOutputMs < RAW_OUTPUT_INTERVAL_MS) {
+        return;
+      }
+
+      lastRawOutputMs = now;
+      document.getElementById("rawOutput").textContent = value;
+    }
+
+    function updateSensorMovement(sensorNumber, latestValue) {
+      const currentEl = document.getElementById(`flex${sensorNumber}Current`);
+      const movementEl = document.getElementById(`flex${sensorNumber}Movement`);
+
+      if (latestValue === null || !Number.isFinite(latestValue)) {
+        currentEl.textContent = "--";
+        movementEl.textContent = "No data";
+        movementEl.className = "movement-off";
+        return false;
+      }
+
+      const isMoving = latestValue > FLEX_BASELINE;
+
+      currentEl.textContent = latestValue.toFixed(1);
+
+      movementEl.textContent = isMoving ? "Flexing" : "At baseline";
+      movementEl.className = isMoving ? "movement-on" : "movement-off";
+
+      return isMoving;
+    }
+
+    function updateAngleDisplay(axisName, latestValue) {
+      const currentEl = document.getElementById(`${axisName}Current`);
+      const movementEl = document.getElementById(`${axisName}Movement`);
+
+      if (!currentEl || !movementEl) {
+        return;
+      }
+
+      if (!Number.isFinite(latestValue)) {
+        currentEl.textContent = "--";
+        movementEl.textContent = "No data";
+        movementEl.className = "movement-off";
+        return;
+      }
+
+      const absValue = Math.abs(latestValue);
+
+      currentEl.textContent = `${latestValue.toFixed(1)}°`;
+
+      if (absValue >= 10) {
+        movementEl.textContent = "Moving";
+        movementEl.className = "movement-on";
+      } else {
+        movementEl.textContent = "Near neutral";
+        movementEl.className = "movement-off";
+      }
+    }
+
+    function updateExerciseSummaryFromStats() {
+      const flex1Reps = liveStats.reps[0];
+      const flex2Reps = liveStats.reps[1];
+      const flex3Reps = liveStats.reps[2];
+      const totalReps = flex1Reps + flex2Reps + flex3Reps;
+
+      const latestFlex1 = liveStats.latest[0];
+      const latestFlex2 = liveStats.latest[1];
+      const latestFlex3 = liveStats.latest[2];
+
+      const flex1Moving = updateSensorMovement(1, latestFlex1);
+      const flex2Moving = updateSensorMovement(2, latestFlex2);
+      const flex3Moving = updateSensorMovement(3, latestFlex3);
+
+      updateAngleDisplay("angleX", liveStats.latestAngleX);
+      updateAngleDisplay("angleY", liveStats.latestAngleY);
+
+      const activeSensors = [flex1Moving, flex2Moving, flex3Moving].filter(Boolean).length;
+
+      document.getElementById("totalReps").textContent = totalReps;
+      document.getElementById("flex1Reps").textContent = flex1Reps;
+      document.getElementById("flex2Reps").textContent = flex2Reps;
+      document.getElementById("flex3Reps").textContent = flex3Reps;
+
+      const interpretationEl = document.getElementById("movementInterpretation");
+      const detailsEl = document.getElementById("movementDetails");
+
+      if (liveStats.totalSamples === 0) {
+        interpretationEl.textContent = "Waiting for patient data...";
+        detailsEl.textContent = "No valid samples were found for this session.";
+        return;
+      }
+
+      if (activeSensors > 0) {
+        interpretationEl.textContent =
+          `Patient is actively flexing ${activeSensors} sensor${activeSensors === 1 ? "" : "s"}.`;
+      } else {
+        interpretationEl.textContent =
+          "Patient is currently at or below flex baseline.";
+      }
+
+      detailsEl.textContent =
+        `Processed ${liveStats.totalSamples} samples across ${liveStats.totalBatches} batch${liveStats.totalBatches === 1 ? "" : "es"} from ${formatDateTime(liveStats.firstTime)} to ${formatDateTime(liveStats.lastTime)}. Latest wrist angle is X=${Number.isFinite(liveStats.latestAngleX) ? liveStats.latestAngleX.toFixed(1) : "--"}°, Y=${Number.isFinite(liveStats.latestAngleY) ? liveStats.latestAngleY.toFixed(1) : "--"}°.`;
+    }
+
+    function resetExerciseSummary() {
+      document.getElementById("totalReps").textContent = "0";
+      document.getElementById("flex1Reps").textContent = "0";
+      document.getElementById("flex2Reps").textContent = "0";
+      document.getElementById("flex3Reps").textContent = "0";
+
+      document.getElementById("movementInterpretation").textContent =
+        "Waiting for patient data...";
+      document.getElementById("movementDetails").textContent =
+        "Start or load a session to calculate repetitions and movement activity.";
+
+      [1, 2, 3].forEach(function (sensorNumber) {
+        document.getElementById(`flex${sensorNumber}Current`).textContent = "--";
+        document.getElementById(`flex${sensorNumber}Movement`).textContent =
+          "No movement";
+        document.getElementById(`flex${sensorNumber}Movement`).className =
+          "movement-off";
+      });
+
+      ["angleX", "angleY"].forEach(function (axisName) {
+        const currentEl = document.getElementById(`${axisName}Current`);
+        const movementEl = document.getElementById(`${axisName}Movement`);
+
+        if (currentEl) {
+          currentEl.textContent = "--";
+        }
+
+        if (movementEl) {
+          movementEl.textContent = "No data";
+          movementEl.className = "movement-off";
+        }
+      });
+    }
+
+    function clearCharts() {
+      const flexCanvas = document.getElementById("flexChart");
+
+      if (flexCanvas) {
+        const flexCtx = flexCanvas.getContext("2d");
+        flexCtx.clearRect(0, 0, flexCanvas.width, flexCanvas.height);
+      }
+
+      const wristCanvas = document.getElementById("wristPositionCanvas");
+
+      if (wristCanvas) {
+        const wristCtx = wristCanvas.getContext("2d");
+        wristCtx.clearRect(0, 0, wristCanvas.width, wristCanvas.height);
+      }
+
+      updateWristPositionCanvas();
+
+      debugLog("Canvas graphs cleared");
+    }
+
+    function renderChartNow() {
+      debugLog("renderChartNow called", {
+        canvasExists: Boolean(document.getElementById("flexChart")),
+        wristCanvasExists: Boolean(document.getElementById("wristPositionCanvas")),
+        visibleSamples: fullData.sampleTimes.length,
+        totalSamples: liveStats.totalSamples,
+        latestFlex: liveStats.latest.slice(),
+        latestAngleX: liveStats.latestAngleX,
+        latestAngleY: liveStats.latestAngleY
+      });
+
+      updateFlexChart();
+      updateWristPositionCanvas();
+    }
+
+    function updateFlexChart() {
+      const canvas = document.getElementById("flexChart");
+
+      if (!canvas) {
+        debugError("Cannot draw graph: #flexChart canvas does not exist");
+        return;
+      }
+
+      const parent = canvas.parentElement;
+
+      if (!parent) {
+        debugError("Cannot draw graph: canvas has no parent element");
+        return;
+      }
+
+      const width = Math.max(parent.clientWidth, 320);
+      const height = 420;
+
+      canvas.width = width;
+      canvas.height = height;
+      canvas.style.width = "100%";
+      canvas.style.height = `${height}px`;
+
+      const ctx = canvas.getContext("2d");
+
+      if (!ctx) {
+        debugError("Cannot draw graph: could not get 2D canvas context");
+        return;
+      }
+
+      ctx.clearRect(0, 0, width, height);
+
+      const paddingLeft = 48;
+      const paddingRight = 16;
+      const paddingTop = 18;
+      const paddingBottom = 42;
+
+      const plotWidth = width - paddingLeft - paddingRight;
+      const plotHeight = height - paddingTop - paddingBottom;
+
+      const values = [
+        ...fullData.flex1,
+        ...fullData.flex2,
+        ...fullData.flex3,
+        FLEX_BASELINE
+      ].filter(Number.isFinite);
+
+      if (values.length === 0 || fullData.sampleIndexes.length === 0) {
+        debugWarn("Graph not drawn: no values or no sample indexes", {
+          valuesLength: values.length,
+          sampleIndexesLength: fullData.sampleIndexes.length
+        });
+
+        ctx.fillStyle = "#52616b";
+        ctx.font = "15px Arial";
+        ctx.fillText("Waiting for live flex sensor data...", paddingLeft, height / 2);
+        return;
+      }
+
+      const minY = 0;
+      const maxObserved = Math.max(...values);
+      const maxY = Math.max(20, Math.ceil(maxObserved / 10) * 10);
+
+      function xForIndex(i) {
+        if (fullData.sampleIndexes.length <= 1) {
+          return paddingLeft;
+        }
+
+        return paddingLeft + (i / (fullData.sampleIndexes.length - 1)) * plotWidth;
+      }
+
+      function yForValue(value) {
+        return paddingTop + plotHeight - ((value - minY) / (maxY - minY)) * plotHeight;
+      }
+
+      ctx.strokeStyle = "#d8e2ea";
+      ctx.lineWidth = 1;
+
+      for (let i = 0; i <= 4; i += 1) {
+        const y = paddingTop + (i / 4) * plotHeight;
+        ctx.beginPath();
+        ctx.moveTo(paddingLeft, y);
+        ctx.lineTo(width - paddingRight, y);
+        ctx.stroke();
+
+        const labelValue = maxY - (i / 4) * maxY;
+        ctx.fillStyle = "#52616b";
+        ctx.font = "12px Arial";
+        ctx.fillText(labelValue.toFixed(0), 8, y + 4);
+      }
+
+      ctx.strokeStyle = "#1f2933";
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.moveTo(paddingLeft, paddingTop);
+      ctx.lineTo(paddingLeft, height - paddingBottom);
+      ctx.lineTo(width - paddingRight, height - paddingBottom);
+      ctx.stroke();
+
+      function drawLine(data, color, label, labelY) {
+        if (!data || data.length === 0) {
+          debugWarn(`Skipping ${label}: no data`);
+          return;
+        }
+
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        ctx.setLineDash([]);
+        ctx.beginPath();
+
+        let started = false;
+        let pointCount = 0;
+
+        for (let i = 0; i < data.length; i += 1) {
+          const value = data[i];
+
+          if (!Number.isFinite(value)) {
+            continue;
+          }
+
+          const x = xForIndex(i);
+          const y = yForValue(value);
+
+          if (!started) {
+            ctx.moveTo(x, y);
+            started = true;
+          } else {
+            ctx.lineTo(x, y);
+          }
+
+          pointCount += 1;
+        }
+
+        if (pointCount === 0) {
+          debugWarn(`Skipping ${label}: no finite points`);
+          return;
+        }
+
+        ctx.stroke();
+
+        ctx.fillStyle = color;
+        ctx.font = "13px Arial";
+        ctx.fillText(label, paddingLeft + 8, labelY);
+      }
+
+      function drawBaseline() {
+        const y = yForValue(FLEX_BASELINE);
+
+        ctx.strokeStyle = "#666";
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([8, 6]);
+        ctx.beginPath();
+        ctx.moveTo(paddingLeft, y);
+        ctx.lineTo(width - paddingRight, y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        ctx.fillStyle = "#666";
+        ctx.font = "13px Arial";
+        ctx.fillText("Flex Baseline 15", width - 138, y - 6);
+      }
+
+      drawBaseline();
+      drawLine(fullData.flex1, "#0079c1", "Flex 1", 22);
+      drawLine(fullData.flex2, "#00a3ad", "Flex 2", 40);
+      drawLine(fullData.flex3, "#2e8540", "Flex 3", 58);
+
+      const latestLabel =
+        `Samples shown: ${fullData.sampleIndexes.length} / Total processed: ${liveStats.totalSamples}`;
+
+      ctx.fillStyle = "#52616b";
+      ctx.font = "13px Arial";
+      ctx.fillText(latestLabel, paddingLeft, height - 14);
+
+      ctx.fillStyle = "#1f2933";
+      ctx.font = "13px Arial";
+      ctx.fillText(
+        `Latest Flex: ${liveStats.latest[0]?.toFixed?.(1) ?? "--"}, ${liveStats.latest[1]?.toFixed?.(1) ?? "--"}, ${liveStats.latest[2]?.toFixed?.(1) ?? "--"}`,
+        Math.max(paddingLeft, width - 390),
+        height - 14
       );
-
-    } catch (error) {
-      debugError("Failed to load exercise data", error);
-
-      if (showAlerts) {
-        alert("Failed to load exercise data.");
-      }
-
-      setRawOutputText(`Failed to load exercise data\n${error}`, true);
-    }
-  }
-
-  function setRawOutputText(value, force = false) {
-    const now = performance.now();
-
-    if (!force && now - lastRawOutputMs < RAW_OUTPUT_INTERVAL_MS) {
-      return;
     }
 
-    lastRawOutputMs = now;
-    document.getElementById("rawOutput").textContent = value;
-  }
+    function updateWristPositionCanvas() {
+      const canvas = document.getElementById("wristPositionCanvas");
 
-  function updateSensorMovement(sensorNumber, latestValue) {
-    const currentEl = document.getElementById(`flex${sensorNumber}Current`);
-    const movementEl = document.getElementById(`flex${sensorNumber}Movement`);
-
-    if (latestValue === null) {
-      currentEl.textContent = "--";
-      movementEl.textContent = "No data";
-      movementEl.className = "movement-off";
-      return false;
-    }
-
-    const isMoving = latestValue > FLEX_BASELINE;
-
-    currentEl.textContent = Number.isFinite(latestValue)
-      ? latestValue.toFixed(1)
-      : String(latestValue);
-
-    movementEl.textContent = isMoving ? "Flexing" : "At baseline";
-    movementEl.className = isMoving ? "movement-on" : "movement-off";
-
-    return isMoving;
-  }
-
-  function updateExerciseSummaryFromStats() {
-    const flex1Reps = liveStats.reps[0];
-    const flex2Reps = liveStats.reps[1];
-    const flex3Reps = liveStats.reps[2];
-    const totalReps = flex1Reps + flex2Reps + flex3Reps;
-
-    const latestFlex1 = liveStats.latest[0];
-    const latestFlex2 = liveStats.latest[1];
-    const latestFlex3 = liveStats.latest[2];
-
-    const flex1Moving = updateSensorMovement(1, latestFlex1);
-    const flex2Moving = updateSensorMovement(2, latestFlex2);
-    const flex3Moving = updateSensorMovement(3, latestFlex3);
-
-    const activeSensors = [flex1Moving, flex2Moving, flex3Moving].filter(Boolean).length;
-
-    document.getElementById("totalReps").textContent = totalReps;
-    document.getElementById("flex1Reps").textContent = flex1Reps;
-    document.getElementById("flex2Reps").textContent = flex2Reps;
-    document.getElementById("flex3Reps").textContent = flex3Reps;
-
-    const interpretationEl = document.getElementById("movementInterpretation");
-    const detailsEl = document.getElementById("movementDetails");
-
-    if (liveStats.totalSamples === 0) {
-      interpretationEl.textContent = "Waiting for patient data...";
-      detailsEl.textContent = "No valid flex sensor samples were found for this session.";
-      return;
-    }
-
-    if (activeSensors > 0) {
-      interpretationEl.textContent =
-        `Patient is actively flexing ${activeSensors} sensor${activeSensors === 1 ? "" : "s"}.`;
-    } else {
-      interpretationEl.textContent =
-        "Patient is currently at or below baseline.";
-    }
-
-    detailsEl.textContent =
-      `Processed ${liveStats.totalSamples} samples across ${liveStats.totalBatches} batch${liveStats.totalBatches === 1 ? "" : "es"} from ${formatDateTime(liveStats.firstTime)} to ${formatDateTime(liveStats.lastTime)}. Reps are counted when a sensor rises above ${FLEX_BASELINE} and returns to ${FLEX_BASELINE} or below.`;
-  }
-
-  function resetExerciseSummary() {
-    document.getElementById("totalReps").textContent = "0";
-    document.getElementById("flex1Reps").textContent = "0";
-    document.getElementById("flex2Reps").textContent = "0";
-    document.getElementById("flex3Reps").textContent = "0";
-
-    document.getElementById("movementInterpretation").textContent =
-      "Waiting for patient data...";
-    document.getElementById("movementDetails").textContent =
-      "Start or load a session to calculate repetitions and movement activity.";
-
-    [1, 2, 3].forEach(function (sensorNumber) {
-      document.getElementById(`flex${sensorNumber}Current`).textContent = "--";
-      document.getElementById(`flex${sensorNumber}Movement`).textContent =
-        "No movement";
-      document.getElementById(`flex${sensorNumber}Movement`).className =
-        "movement-off";
-    });
-  }
-
-  function clearCharts() {
-    const canvas = document.getElementById("flexChart");
-
-    if (!canvas) {
-      debugWarn("clearCharts skipped: flexChart canvas missing");
-      return;
-    }
-
-    const ctx = canvas.getContext("2d");
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-    debugLog("Canvas graph cleared");
-  }
-
-  function renderChartNow() {
-    debugLog("renderChartNow called", {
-      canvasExists: Boolean(document.getElementById("flexChart")),
-      visibleSamples: fullData.sampleTimes.length,
-      totalSamples: liveStats.totalSamples,
-      latest: liveStats.latest.slice(),
-      flex1Last5: fullData.flex1.slice(-5),
-      flex2Last5: fullData.flex2.slice(-5),
-      flex3Last5: fullData.flex3.slice(-5)
-    });
-
-    updateFlexChart();
-  }
-
-  function updateFlexChart() {
-    const canvas = document.getElementById("flexChart");
-
-    if (!canvas) {
-      debugError("Cannot draw graph: #flexChart canvas does not exist");
-      return;
-    }
-
-    const parent = canvas.parentElement;
-
-    if (!parent) {
-      debugError("Cannot draw graph: canvas has no parent element");
-      return;
-    }
-
-    const width = Math.max(parent.clientWidth, 320);
-    const height = 420;
-
-    canvas.width = width;
-    canvas.height = height;
-    canvas.style.width = "100%";
-    canvas.style.height = `${height}px`;
-
-    const ctx = canvas.getContext("2d");
-
-    if (!ctx) {
-      debugError("Cannot draw graph: could not get 2D canvas context");
-      return;
-    }
-
-    ctx.clearRect(0, 0, width, height);
-
-    const paddingLeft = 48;
-    const paddingRight = 16;
-    const paddingTop = 18;
-    const paddingBottom = 42;
-
-    const plotWidth = width - paddingLeft - paddingRight;
-    const plotHeight = height - paddingTop - paddingBottom;
-
-    const values = [
-      ...fullData.flex1,
-      ...fullData.flex2,
-      ...fullData.flex3,
-      FLEX_BASELINE
-    ].filter(Number.isFinite);
-
-    if (values.length === 0 || fullData.sampleIndexes.length === 0) {
-      debugWarn("Graph not drawn: no values or no sample indexes", {
-        valuesLength: values.length,
-        sampleIndexesLength: fullData.sampleIndexes.length
-      });
-
-      ctx.fillStyle = "#52616b";
-      ctx.font = "15px Arial";
-      ctx.fillText("Waiting for live flex sensor data...", paddingLeft, height / 2);
-      return;
-    }
-
-    const minY = 0;
-    const maxObserved = Math.max(...values);
-    const maxY = Math.max(20, Math.ceil(maxObserved / 10) * 10);
-
-    debugLog("Drawing graph", {
-      width,
-      height,
-      visibleSamples: fullData.sampleIndexes.length,
-      maxObserved,
-      maxY,
-      latest: liveStats.latest.slice()
-    });
-
-    function xForIndex(i) {
-      if (fullData.sampleIndexes.length <= 1) {
-        return paddingLeft;
-      }
-
-      return paddingLeft + (i / (fullData.sampleIndexes.length - 1)) * plotWidth;
-    }
-
-    function yForValue(value) {
-      return paddingTop + plotHeight - ((value - minY) / (maxY - minY)) * plotHeight;
-    }
-
-    ctx.strokeStyle = "#d8e2ea";
-    ctx.lineWidth = 1;
-
-    for (let i = 0; i <= 4; i += 1) {
-      const y = paddingTop + (i / 4) * plotHeight;
-      ctx.beginPath();
-      ctx.moveTo(paddingLeft, y);
-      ctx.lineTo(width - paddingRight, y);
-      ctx.stroke();
-
-      const labelValue = maxY - (i / 4) * maxY;
-      ctx.fillStyle = "#52616b";
-      ctx.font = "12px Arial";
-      ctx.fillText(labelValue.toFixed(0), 8, y + 4);
-    }
-
-    ctx.strokeStyle = "#1f2933";
-    ctx.lineWidth = 1.2;
-    ctx.beginPath();
-    ctx.moveTo(paddingLeft, paddingTop);
-    ctx.lineTo(paddingLeft, height - paddingBottom);
-    ctx.lineTo(width - paddingRight, height - paddingBottom);
-    ctx.stroke();
-
-    function drawLine(data, color, label, labelY) {
-      if (!data || data.length === 0) {
-        debugWarn(`Skipping ${label}: no data`);
+      if (!canvas) {
+        debugWarn("updateWristPositionCanvas skipped: wristPositionCanvas missing");
         return;
       }
 
-      ctx.strokeStyle = color;
-      ctx.lineWidth = 2;
-      ctx.beginPath();
+      const parent = canvas.parentElement;
+      const width = Math.max(parent ? parent.clientWidth : 360, 320);
+      const height = 360;
 
-      let started = false;
-      let pointCount = 0;
+      canvas.width = width;
+      canvas.height = height;
+      canvas.style.width = "100%";
+      canvas.style.height = `${height}px`;
 
-      for (let i = 0; i < data.length; i += 1) {
-        const value = data[i];
+      const ctx = canvas.getContext("2d");
 
-        if (!Number.isFinite(value)) {
-          continue;
-        }
-
-        const x = xForIndex(i);
-        const y = yForValue(value);
-
-        if (!started) {
-          ctx.moveTo(x, y);
-          started = true;
-        } else {
-          ctx.lineTo(x, y);
-        }
-
-        pointCount += 1;
-      }
-
-      if (pointCount === 0) {
-        debugWarn(`Skipping ${label}: no finite points`);
+      if (!ctx) {
+        debugError("Cannot draw wrist position: could not get 2D context");
         return;
       }
 
+      const angleX = Number(liveStats.latestAngleX);
+      const angleY = Number(liveStats.latestAngleY);
+
+      ctx.clearRect(0, 0, width, height);
+
+      const centerX = width / 2;
+      const centerY = height / 2;
+      const radius = Math.min(width, height) * 0.38;
+
+      ctx.fillStyle = "#fbfdff";
+      ctx.fillRect(0, 0, width, height);
+
+      ctx.strokeStyle = "#d8e2ea";
+      ctx.lineWidth = 1;
+
+      ctx.beginPath();
+      ctx.moveTo(centerX, 24);
+      ctx.lineTo(centerX, height - 24);
       ctx.stroke();
 
-      ctx.fillStyle = color;
-      ctx.font = "13px Arial";
-      ctx.fillText(label, paddingLeft + 8, labelY);
+      ctx.beginPath();
+      ctx.moveTo(24, centerY);
+      ctx.lineTo(width - 24, centerY);
+      ctx.stroke();
 
-      debugLog(`Drew ${label}`, {
-        points: pointCount,
-        lastFive: data.slice(-5)
-      });
-    }
-
-    function drawBaseline() {
-      const y = yForValue(FLEX_BASELINE);
-
-      ctx.strokeStyle = "#666";
+      ctx.strokeStyle = "#b9c8d4";
       ctx.lineWidth = 1.5;
-      ctx.setLineDash([8, 6]);
-      ctx.beginPath();
-      ctx.moveTo(paddingLeft, y);
-      ctx.lineTo(width - paddingRight, y);
-      ctx.stroke();
-      ctx.setLineDash([]);
 
-      ctx.fillStyle = "#666";
+      ctx.beginPath();
+      ctx.arc(centerX, centerY, radius, 0, Math.PI * 2);
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.arc(centerX, centerY, radius * 0.5, 0, Math.PI * 2);
+      ctx.stroke();
+
+      ctx.fillStyle = "#52616b";
       ctx.font = "13px Arial";
-      ctx.fillText("Baseline 15", width - 110, y - 6);
+      ctx.fillText("Neutral", centerX + 8, centerY - 8);
+      ctx.fillText("Angle X →", width - 98, centerY - 10);
+      ctx.fillText("Angle Y ↑", centerX + 10, 36);
+
+      ctx.fillStyle = "#1f2933";
+      ctx.font = "12px Arial";
+      ctx.fillText(`+${WRIST_MAX_ANGLE}°`, width - 64, centerY + 18);
+      ctx.fillText(`-${WRIST_MAX_ANGLE}°`, 28, centerY + 18);
+      ctx.fillText(`+${WRIST_MAX_ANGLE}°`, centerX + 12, 58);
+      ctx.fillText(`-${WRIST_MAX_ANGLE}°`, centerX + 12, height - 34);
+
+      if (!Number.isFinite(angleX) || !Number.isFinite(angleY)) {
+        ctx.fillStyle = "#52616b";
+        ctx.font = "15px Arial";
+        ctx.fillText("Waiting for angle_x and angle_y data...", 28, height - 30);
+        return;
+      }
+
+      const clampedX = Math.max(-WRIST_MAX_ANGLE, Math.min(WRIST_MAX_ANGLE, angleX));
+      const clampedY = Math.max(-WRIST_MAX_ANGLE, Math.min(WRIST_MAX_ANGLE, angleY));
+
+      const dotX = centerX + (clampedX / WRIST_MAX_ANGLE) * radius;
+      const dotY = centerY - (clampedY / WRIST_MAX_ANGLE) * radius;
+
+      ctx.strokeStyle = "#0079c1";
+      ctx.lineWidth = 2;
+
+      ctx.beginPath();
+      ctx.moveTo(centerX, centerY);
+      ctx.lineTo(dotX, dotY);
+      ctx.stroke();
+
+      ctx.fillStyle = "#0079c1";
+      ctx.beginPath();
+      ctx.arc(dotX, dotY, 10, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = "#ffffff";
+      ctx.beginPath();
+      ctx.arc(dotX, dotY, 4, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = "#1f2933";
+      ctx.font = "14px Arial";
+      ctx.fillText(`angle_x: ${angleX.toFixed(1)}°`, 24, height - 48);
+      ctx.fillText(`angle_y: ${angleY.toFixed(1)}°`, 24, height - 26);
     }
 
-    drawBaseline();
-    drawLine(fullData.flex1, "#0079c1", "Flex 1", 22);
-    drawLine(fullData.flex2, "#00a3ad", "Flex 2", 40);
-    drawLine(fullData.flex3, "#2e8540", "Flex 3", 58);
+    window.onload = function () {
+      debugLog("window.onload fired");
+      debugLog("Startup checks", {
+        socketIoLoaded: typeof io !== "undefined",
+        canvasExists: Boolean(document.getElementById("flexChart")),
+        wristCanvasExists: Boolean(document.getElementById("wristPositionCanvas")),
+        sessionInputExists: Boolean(document.getElementById("sessionIdInput")),
+        rawOutputExists: Boolean(document.getElementById("rawOutput")),
+        chartJsLoaded: typeof Chart !== "undefined"
+      });
 
-    const latestLabel = `Samples shown: ${fullData.sampleIndexes.length} / Total processed: ${liveStats.totalSamples}`;
-
-    ctx.fillStyle = "#52616b";
-    ctx.font = "13px Arial";
-    ctx.fillText(latestLabel, paddingLeft, height - 14);
-
-    ctx.fillStyle = "#1f2933";
-    ctx.font = "13px Arial";
-    ctx.fillText(
-      `Latest: ${liveStats.latest[0]?.toFixed?.(1) ?? "--"}, ${liveStats.latest[1]?.toFixed?.(1) ?? "--"}, ${liveStats.latest[2]?.toFixed?.(1) ?? "--"}`,
-      Math.max(paddingLeft, width - 270),
-      height - 14
-    );
-  }
-
-  window.onload = function () {
-    debugLog("window.onload fired");
-    debugLog("Startup checks", {
-      socketIoLoaded: typeof io !== "undefined",
-      canvasExists: Boolean(document.getElementById("flexChart")),
-      sessionInputExists: Boolean(document.getElementById("sessionIdInput")),
-      rawOutputExists: Boolean(document.getElementById("rawOutput")),
-      chartJsLoaded: typeof Chart !== "undefined"
-    });
-
-    clearCharts();
-    connectSocket();
-  };
-</script>
+      clearCharts();
+      connectSocket();
+    };
+  </script>
 </body>
 </html>

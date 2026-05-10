@@ -300,7 +300,7 @@ def buffer_flex_batch(body):
         if not isinstance(row, list):
             return None, ("Each data row must be a list", 400)
 
-        if len(row) != 3:
+        if len(row) != 5:
             return None, ("Each data row must have exactly 3 values", 400)
 
         if not all(isinstance(value, (int, float)) for value in row):
