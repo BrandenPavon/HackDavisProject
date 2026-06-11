@@ -548,6 +548,6 @@ Built for real-time exercise monitoring using ESP32 sensors, Flask, Socket.IO, M
 
 <br>
 
-Developed by **Branden Pavon**, **Nicolas Holasek**, ** Serafim Sharkov**, ** Mirzett Evans IV **, **Neil Artista**
+Developed by **Branden Pavon**, **Nicolas Holasek**, **Serafim Sharkov**, **Mirzett Evans IV**, **Neil Artista**
 
 </div>
